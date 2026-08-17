@@ -1,0 +1,13 @@
+# LapisLauncher — dependencies, generated files and local secrets.
+node_modules/
+**/dist/
+**/out/
+**/build/
+.gradle/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+apps/api/generated/
+.lapis/

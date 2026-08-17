@@ -1,0 +1,11 @@
+{
+  "name": "@lapis/minecraft-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": { "@xmcl/core": "2.13.0", "@xmcl/installer": "5.4.0", "adm-zip": "^0.5.16", "undici": "6.0.1" },
+  "devDependencies": { "@types/adm-zip": "^0.5.7", "@types/node": "^22.17.2", "typescript": "^5.9.2" }
+}

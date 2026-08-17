@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: lapis
+      POSTGRES_USER: lapis
+      POSTGRES_PASSWORD: lapis
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lapis -d lapis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - lapis_postgres_data:/var/lib/postgresql/data
+
+  postgres-test:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: lapis_test
+      POSTGRES_USER: lapis
+      POSTGRES_PASSWORD: lapis
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lapis -d lapis_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - lapis_postgres_test_data:/var/lib/postgresql/data
+
+volumes:
+  lapis_postgres_data:
+  lapis_postgres_test_data:

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "lapis_bridge_server",
+  "version": "${version}",
+  "name": "Lapis Bridge Server",
+  "environment": "server",
+  "entrypoints": { "main": ["ru.lapis.bridge.server.LapisBridgeServer"] },
+  "depends": { "fabricloader": ">=0.19.3", "minecraft": "26.2", "fabric-api": "*", "java": ">=25" }
+}

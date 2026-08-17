@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  nickname     String    @unique @db.VarChar(16)
+  nicknameFold String    @unique @map("nickname_fold") @db.VarChar(16)
+  passwordHash String    @map("password_hash")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  sessions     Session[]
+  gameTickets  GameTicket[]
+
+  @@map("users")
+}
+
+model GameTicket {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  userId    String    @map("user_id") @db.Uuid
+  serverId  String    @map("server_id") @db.VarChar(32)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([serverId])
+  @@map("game_tickets")
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  userId    String    @map("user_id") @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Server {
+  id               String   @id @db.VarChar(32)
+  slug             String   @unique @db.VarChar(64)
+  name             String   @db.VarChar(80)
+  host             String   @db.VarChar(255)
+  port             Int
+  minecraftVersion String   @map("minecraft_version") @db.VarChar(32)
+  loader           String   @db.VarChar(32)
+  activeBuildId    String   @map("active_build_id") @db.VarChar(64)
+  activeBuild      GameBuild @relation(fields: [activeBuildId], references: [id], onDelete: Restrict)
+  visible          Boolean  @default(true)
+  maintenance      Boolean  @default(false)
+  status           String   @default("unknown") @db.VarChar(16)
+  onlinePlayers    Int?     @map("online_players")
+  maxPlayers       Int?     @map("max_players")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("servers")
+}
+
+model GameBuild {
+  id               String     @id @db.VarChar(64)
+  slug             String     @unique @db.VarChar(64)
+  name             String     @db.VarChar(80)
+  minecraftVersion String     @map("minecraft_version") @db.VarChar(32)
+  loader           String     @db.VarChar(32)
+  loaderVersion    String     @map("loader_version") @db.VarChar(32)
+  createdAt        DateTime   @default(now()) @map("created_at")
+  servers          Server[]
+  mods             BuildMod[]
+
+  @@map("game_builds")
+}
+
+model BuildMod {
+  id        String    @id @default(uuid()) @db.Uuid
+  buildId   String    @map("build_id") @db.VarChar(64)
+  fileName  String    @map("file_name") @db.VarChar(180)
+  url       String
+  sha1      String    @db.Char(40)
+  required  Boolean   @default(true)
+  build     GameBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+
+  @@unique([buildId, fileName])
+  @@index([buildId])
+  @@map("build_mods")
+}

@@ -1,0 +1,1 @@
+ALTER TABLE "servers" ADD COLUMN "status" VARCHAR(16) NOT NULL DEFAULT 'unknown';

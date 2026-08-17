@@ -1,0 +1,9 @@
+pluginManagement {
+  repositories {
+    maven { url = 'https://maven.fabricmc.net/' }
+    gradlePluginPortal()
+  }
+}
+
+rootProject.name = 'lapis-fabric-bridge'
+include 'bridge-common', 'bridge-client', 'bridge-server'
