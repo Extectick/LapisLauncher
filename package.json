@@ -5,6 +5,7 @@
   "scripts": {
     "dev:api": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/api dev",
     "dev:launcher": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/minecraft-core build && pnpm --filter @lapis/launcher dev",
+    "package:win": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/minecraft-core build && pnpm --filter @lapis/launcher package:win",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",

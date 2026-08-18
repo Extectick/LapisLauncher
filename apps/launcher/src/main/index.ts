@@ -51,6 +51,14 @@ import {
   minecraftInstanceDirectory,
   removeMinecraftRuntime,
 } from "@lapis/minecraft-core";
+import {
+  checkForUpdates,
+  downloadUpdate,
+  getUpdateStatus,
+  initializeUpdater,
+  installDownloadedUpdate,
+  type AppUpdateStatus,
+} from "./updater";
 
 const API_URL = process.env.LAPIS_API_URL ?? "http://127.0.0.1:3000";
 const SESSION_FILE = "session.bin";
@@ -685,7 +693,10 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   });
-  mainWindow.once("ready-to-show", () => mainWindow?.show());
+  mainWindow.once("ready-to-show", () => {
+    mainWindow?.show();
+    if (mainWindow) void initializeUpdater(mainWindow);
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https:")) void shell.openExternal(url);
     return { action: "deny" };
@@ -707,6 +718,31 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   app.setAppUserModelId(WINDOWS_APP_ID);
+  ipcMain.handle("updates:status", async () => ({
+    ok: true,
+    data: getUpdateStatus(),
+  }) satisfies IpcResult<AppUpdateStatus>);
+  ipcMain.handle("updates:check", async () => ({
+    ok: true,
+    data: await checkForUpdates(),
+  }) satisfies IpcResult<AppUpdateStatus>);
+  ipcMain.handle("updates:download", async () => ({
+    ok: true,
+    data: await downloadUpdate(),
+  }) satisfies IpcResult<AppUpdateStatus>);
+  ipcMain.handle("updates:install", async () => {
+    if (await currentRunningGame())
+      return {
+        ok: false,
+        error: { message: "Закройте Minecraft перед обновлением лаунчера." },
+      } satisfies IpcResult<null>;
+    if (!installDownloadedUpdate())
+      return {
+        ok: false,
+        error: { message: "Обновление ещё не готово к установке." },
+      } satisfies IpcResult<null>;
+    return { ok: true, data: null } satisfies IpcResult<null>;
+  });
   ipcMain.handle("auth:register", async (_event, input: unknown) => {
     const parsed = registerSchema.safeParse(input);
     return parsed.success

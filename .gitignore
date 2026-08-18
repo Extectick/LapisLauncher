@@ -3,6 +3,7 @@ node_modules/
 **/dist/
 **/out/
 **/build/
+**/release/
 .gradle/
 .env
 .env.*

@@ -38,6 +38,20 @@ type LaunchSettings = {
   maxMemoryMb: number;
   fullscreen: boolean;
 };
+type AppUpdateStatus = {
+  currentVersion: string;
+  phase:
+    | "disabled"
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "not-available"
+    | "error";
+  version?: string;
+  progress?: number;
+};
 type PlayerSkin = { textureUrl: string; model: "default" | "slim" };
 declare global {
   interface Window {
@@ -58,6 +72,13 @@ declare global {
       profile: {
         skin(accessToken: string): Promise<IpcResult<PlayerSkin>>;
         uploadSkin(accessToken: string): Promise<IpcResult<PlayerSkin | null>>;
+      };
+      updates: {
+        status(): Promise<IpcResult<AppUpdateStatus>>;
+        check(): Promise<IpcResult<AppUpdateStatus>>;
+        download(): Promise<IpcResult<AppUpdateStatus>>;
+        install(): Promise<IpcResult<null>>;
+        onStatus(callback: (status: AppUpdateStatus) => void): () => void;
       };
       runtime: {
         javaStatus(): Promise<IpcResult<{ major: number; installed: boolean }>>;

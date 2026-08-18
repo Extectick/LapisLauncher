@@ -40,6 +40,20 @@ type LaunchSettings = {
   maxMemoryMb: number;
   fullscreen: boolean;
 };
+type AppUpdateStatus = {
+  currentVersion: string;
+  phase:
+    | "disabled"
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "not-available"
+    | "error";
+  version?: string;
+  progress?: number;
+};
 
 contextBridge.exposeInMainWorld("lapis", {
   auth: {
@@ -60,6 +74,21 @@ contextBridge.exposeInMainWorld("lapis", {
       ipcRenderer.invoke("profile:skin", accessToken),
     uploadSkin: (accessToken: string): Promise<IpcResult<PlayerSkin | null>> =>
       ipcRenderer.invoke("profile:upload-skin", accessToken),
+  },
+  updates: {
+    status: (): Promise<IpcResult<AppUpdateStatus>> =>
+      ipcRenderer.invoke("updates:status"),
+    check: (): Promise<IpcResult<AppUpdateStatus>> =>
+      ipcRenderer.invoke("updates:check"),
+    download: (): Promise<IpcResult<AppUpdateStatus>> =>
+      ipcRenderer.invoke("updates:download"),
+    install: (): Promise<IpcResult<null>> => ipcRenderer.invoke("updates:install"),
+    onStatus: (callback: (status: AppUpdateStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: AppUpdateStatus): void =>
+        callback(status);
+      ipcRenderer.on("updates:status", listener);
+      return () => ipcRenderer.removeListener("updates:status", listener);
+    },
   },
   runtime: {
     javaStatus: (): Promise<IpcResult<{ major: number; installed: boolean }>> =>

@@ -30,6 +30,20 @@ type LaunchSettings = {
   maxMemoryMb: number;
   fullscreen: boolean;
 };
+type AppUpdateStatus = {
+  currentVersion: string;
+  phase:
+    | "disabled"
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "not-available"
+    | "error";
+  version?: string;
+  progress?: number;
+};
 const DEFAULT_PLAYER_SKIN: PlayerSkin = {
   textureUrl:
     "https://textures.minecraft.net/texture/6d3b06c38504ffc0229b9492147c69fcf59fd2ed7885f78502152f77b4d50de1",
@@ -640,6 +654,8 @@ function Dashboard({
   onStop,
   onDelete,
   onSettings,
+  updateStatus,
+  onUpdateAction,
 }: {
   session: Session;
   servers: ServerCatalogItem[];
@@ -658,6 +674,8 @@ function Dashboard({
   onStop: () => void;
   onDelete: (server: ServerCatalogItem) => void;
   onSettings: (server: ServerCatalogItem) => void;
+  updateStatus: AppUpdateStatus;
+  onUpdateAction: () => void;
 }): JSX.Element {
   const [menuServerId, setMenuServerId] = useState<string | null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
@@ -693,6 +711,16 @@ function Dashboard({
     setMenuServerId(null);
     action(server);
   };
+  const updateLabel =
+    updateStatus.phase === "available"
+      ? "Доступно обновление"
+      : updateStatus.phase === "downloading"
+        ? `Скачивание ${updateStatus.progress ?? 0}%`
+        : "Перезапустить и обновить";
+  const updateActionVisible =
+    updateStatus.phase === "available" ||
+    updateStatus.phase === "downloading" ||
+    updateStatus.phase === "downloaded";
   return (
     <main className={`shell dashboard ${loggingOut ? "is-leaving" : ""}`}>
       <aside className="profile">
@@ -710,6 +738,16 @@ function Dashboard({
       <section className="servers">
         <header>
           <h2>Серверы</h2>
+          {updateActionVisible && (
+            <button
+              className={`update-action ${updateStatus.phase}`}
+              type="button"
+              disabled={updateStatus.phase === "downloading"}
+              onClick={onUpdateAction}
+            >
+              {updateLabel}
+            </button>
+          )}
         </header>
         {catalogError && <p className="error">{catalogError}</p>}
         <div className="server-list">
@@ -878,6 +916,10 @@ export function App(): JSX.Element {
   );
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
+    currentVersion: "",
+    phase: "disabled",
+  });
   const showNotice = (message: string): void =>
     setNotice({ id: Date.now(), message });
   useEffect(() => {
@@ -885,6 +927,13 @@ export function App(): JSX.Element {
     const timer = window.setTimeout(() => setNotice(null), 5000);
     return () => window.clearTimeout(timer);
   }, [notice]);
+  useEffect(() => {
+    const unsubscribe = window.lapis.updates.onStatus(setUpdateStatus);
+    void window.lapis.updates.status().then((result) => {
+      if (result.ok) setUpdateStatus(result.data);
+    });
+    return unsubscribe;
+  }, []);
   useEffect(() => {
     void window.lapis.auth
       .restore()
@@ -1076,6 +1125,17 @@ export function App(): JSX.Element {
     setSettingsSaving(false);
     setSettingsServer(null);
   }
+  async function runUpdateAction(): Promise<void> {
+    if (updateStatus.phase === "available") {
+      const result = await window.lapis.updates.download();
+      if (result.ok) setUpdateStatus(result.data);
+      return;
+    }
+    if (updateStatus.phase === "downloaded") {
+      const result = await window.lapis.updates.install();
+      if (!result.ok) showNotice(result.error.message);
+    }
+  }
   async function uploadSkin(): Promise<void> {
     if (!session || skinUploading) return;
     setSkinUploading(true);
@@ -1141,6 +1201,8 @@ export function App(): JSX.Element {
           setConfirmationRequest({ kind: "delete", server })
         }
         onSettings={(server) => void openBuildSettings(server)}
+        updateStatus={updateStatus}
+        onUpdateAction={() => void runUpdateAction()}
       />
     ) : (
       <AuthScreen

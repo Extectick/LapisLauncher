@@ -370,11 +370,36 @@ button:focus-visible {
   min-width: 0;
 }
 .servers header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 14px;
 }
 .servers h2 {
   margin: 0;
   font-size: 28px;
+}
+.update-action {
+  min-height: 0;
+  padding: 0;
+  color: #8fc4ff;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+.update-action.available:hover:not(:disabled),
+.update-action.downloaded:hover:not(:disabled) {
+  color: #d9edff;
+  background: transparent;
+  filter: none;
+  transform: none;
+}
+.update-action.downloading {
+  color: #a8bdd9;
+  cursor: default;
 }
 .server-list {
   display: grid;
