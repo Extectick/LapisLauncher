@@ -1,16 +1,37 @@
 import { app, BrowserWindow } from "electron";
 import log from "electron-log/main";
-import { readFile } from "node:fs/promises";
+import { readFile, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import { UpdateManager, type UpdateInfo, type VelopackAsset } from "velopack";
 import { z } from "zod";
 import type { AppUpdateStatus, UpdateTrigger } from "../shared/update-types";
+import {
+  UPDATE_DOWNLOAD_MAX_ATTEMPTS,
+  formatUpdateBytes,
+  requiredUpdateDiskBytes,
+  updateRetryDelayMs,
+} from "./update-policy";
 
 const DEFAULT_CHECK_INTERVAL_MINUTES = 30;
 const MIN_CHECK_INTERVAL_MINUTES = 10;
 const MAX_CHECK_INTERVAL_MINUTES = 24 * 60;
 const FOCUS_CHECK_MAX_AGE_MS = 10 * 60_000;
 const ERROR_RETRY_BASE_MS = 5 * 60_000;
+
+type UpdateInstallGuard = () => Promise<string | null>;
+type InitializeUpdaterOptions = { installGuard?: UpdateInstallGuard };
+export type UpdateInstallResult = { ok: true } | { ok: false; message: string };
+
+class UpdateDiskSpaceError extends Error {
+  constructor(
+    readonly available: bigint,
+    readonly required: bigint,
+  ) {
+    super(
+      `Insufficient update disk space: ${available.toString()} of ${required.toString()} bytes available`,
+    );
+  }
+}
 
 const updateConfigSchema = z.object({
   url: z
@@ -40,10 +61,13 @@ let pendingAsset: VelopackAsset | null = null;
 let checkInFlight: Promise<AppUpdateStatus> | null = null;
 let downloadInFlight: Promise<AppUpdateStatus> | null = null;
 let scheduledCheck: NodeJS.Timeout | null = null;
+let scheduledDownloadRetry: NodeJS.Timeout | null = null;
 let checkIntervalMs = DEFAULT_CHECK_INTERVAL_MINUTES * 60_000;
 let lastCheckedAt = 0;
 let consecutiveFailures = 0;
+let consecutiveDownloadFailures = 0;
 let shuttingDown = false;
+let installGuard: UpdateInstallGuard = async () => null;
 
 let status: AppUpdateStatus = {
   currentVersion: app.getVersion(),
@@ -123,6 +147,12 @@ function updateMetadata(
 }
 
 function classifyError(error: unknown): NonNullable<AppUpdateStatus["error"]> {
+  if (error instanceof UpdateDiskSpaceError)
+    return {
+      code: "disk-space",
+      message: `Недостаточно места: для обновления требуется ${formatUpdateBytes(error.required)} свободного пространства.`,
+      retryable: false,
+    };
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   if (normalized.includes("not installed"))
@@ -169,6 +199,46 @@ function clearSchedule(): void {
   scheduledCheck = null;
 }
 
+function clearDownloadRetry(): void {
+  if (scheduledDownloadRetry) clearTimeout(scheduledDownloadRetry);
+  scheduledDownloadRetry = null;
+}
+
+function scheduleDownloadRetry(): void {
+  clearDownloadRetry();
+  if (!manager || shuttingDown || !pendingUpdate || pendingAsset) return;
+  const baseDelay = Math.min(
+    ERROR_RETRY_BASE_MS * 2 ** Math.max(consecutiveDownloadFailures - 1, 0),
+    checkIntervalMs,
+  );
+  const jitter = Math.round(baseDelay * (Math.random() * 0.16 - 0.08));
+  scheduledDownloadRetry = setTimeout(
+    () => {
+      scheduledDownloadRetry = null;
+      void downloadUpdate();
+    },
+    Math.max(60_000, baseDelay + jitter),
+  );
+  scheduledDownloadRetry.unref();
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function ensureUpdateDiskSpace(update: UpdateInfo): Promise<void> {
+  const required = requiredUpdateDiskBytes(update.TargetFullRelease.Size);
+  try {
+    const disk = await statfs(process.execPath, { bigint: true });
+    const available = disk.bavail * disk.bsize;
+    if (available < required)
+      throw new UpdateDiskSpaceError(available, required);
+  } catch (error) {
+    if (error instanceof UpdateDiskSpaceError) throw error;
+    updaterLog.warn("Unable to determine free update disk space", error);
+  }
+}
+
 function scheduleNextCheck(afterError = false): void {
   clearSchedule();
   if (!manager || shuttingDown || pendingUpdate || pendingAsset) return;
@@ -189,8 +259,12 @@ function scheduleNextCheck(afterError = false): void {
   scheduledCheck.unref();
 }
 
-export async function initializeUpdater(window: BrowserWindow): Promise<void> {
+export async function initializeUpdater(
+  window: BrowserWindow,
+  options: InitializeUpdaterOptions = {},
+): Promise<void> {
   targetWindow = window;
+  installGuard = options.installGuard ?? (async () => null);
   log.initialize();
   log.transports.file.level = "info";
   log.transports.file.maxSize = 2 * 1024 * 1024;
@@ -238,7 +312,7 @@ export async function initializeUpdater(window: BrowserWindow): Promise<void> {
           downloadSize: pendingAsset.Size,
         }),
       );
-      installDownloadedUpdate();
+      await installDownloadedUpdate();
       return;
     }
   } catch (error) {
@@ -254,7 +328,7 @@ export async function initializeUpdater(window: BrowserWindow): Promise<void> {
   const startupResult = await checkForUpdates("startup");
   if (startupResult.phase !== "available") return;
   const downloaded = await downloadUpdate();
-  if (downloaded.phase === "downloaded") installDownloadedUpdate();
+  if (downloaded.phase === "downloaded") await installDownloadedUpdate();
 }
 
 export function getUpdateStatus(): AppUpdateStatus {
@@ -343,6 +417,7 @@ export function downloadUpdate(): Promise<AppUpdateStatus> {
   const update = pendingUpdate;
   const metadata = updateMetadata(update);
   const startup = status.startup;
+  clearDownloadRetry();
   downloadInFlight = (async () => {
     publishStatus(
       currentStatus("downloading", {
@@ -353,17 +428,43 @@ export function downloadUpdate(): Promise<AppUpdateStatus> {
       }),
     );
     try {
-      await manager!.downloadUpdateAsync(update, (progress) => {
-        publishStatus(
-          currentStatus("downloading", {
-            trigger: status.trigger,
-            startup,
-            progress: Math.max(0, Math.min(100, Math.round(progress))),
-            ...metadata,
-          }),
-        );
-      });
+      await ensureUpdateDiskSpace(update);
+      let lastError: unknown;
+      for (
+        let attempt = 1;
+        attempt <= UPDATE_DOWNLOAD_MAX_ATTEMPTS;
+        attempt++
+      ) {
+        try {
+          await manager!.downloadUpdateAsync(update, (progress) => {
+            publishStatus(
+              currentStatus("downloading", {
+                trigger: status.trigger,
+                startup,
+                progress: Math.max(0, Math.min(100, Math.round(progress))),
+                ...metadata,
+              }),
+            );
+          });
+          lastError = undefined;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (shuttingDown || attempt >= UPDATE_DOWNLOAD_MAX_ATTEMPTS) break;
+          const delay = updateRetryDelayMs(attempt);
+          updaterLog.warn(
+            `Update download attempt ${attempt} failed; retrying in ${delay}ms`,
+            error,
+          );
+          await wait(delay);
+        }
+      }
+      if (lastError) throw lastError;
       pendingAsset = manager!.getUpdatePendingRestart();
+      if (!pendingAsset)
+        throw new Error("Velopack did not stage the downloaded update.");
+      consecutiveDownloadFailures = 0;
+      clearDownloadRetry();
       return publishStatus(
         currentStatus("downloaded", {
           trigger: status.trigger,
@@ -374,7 +475,9 @@ export function downloadUpdate(): Promise<AppUpdateStatus> {
       );
     } catch (error) {
       updaterLog.error("Update download failed", error);
-      return publishStatus(
+      consecutiveDownloadFailures += 1;
+      const classified = classifyError(error);
+      const next = publishStatus(
         currentStatus("error", {
           trigger: status.trigger,
           startup: false,
@@ -382,9 +485,11 @@ export function downloadUpdate(): Promise<AppUpdateStatus> {
           downloadSize: metadata.downloadSize,
           differential: metadata.differential,
           releaseNotes: metadata.releaseNotes,
-          error: classifyError(error),
+          error: classified,
         }),
       );
+      if (classified.retryable) scheduleDownloadRetry();
+      return next;
     } finally {
       downloadInFlight = null;
     }
@@ -392,11 +497,36 @@ export function downloadUpdate(): Promise<AppUpdateStatus> {
   return downloadInFlight;
 }
 
-export function installDownloadedUpdate(): boolean {
-  if (!manager || shuttingDown) return false;
+export async function installDownloadedUpdate(): Promise<UpdateInstallResult> {
+  if (!manager || shuttingDown)
+    return { ok: false, message: "Обновление ещё не готово к установке." };
   const target = pendingUpdate ?? pendingAsset;
-  if (!target) return false;
+  if (!target)
+    return { ok: false, message: "Обновление ещё не готово к установке." };
+  try {
+    const blockedMessage = await installGuard();
+    if (blockedMessage) {
+      publishStatus({
+        ...status,
+        phase: "downloaded",
+        startup: false,
+        error: {
+          code: "locked",
+          message: blockedMessage,
+          retryable: true,
+        },
+      });
+      return { ok: false, message: blockedMessage };
+    }
+  } catch (error) {
+    updaterLog.error("Update install guard failed", error);
+    return {
+      ok: false,
+      message: "Не удалось безопасно подготовить установку обновления.",
+    };
+  }
   clearSchedule();
+  clearDownloadRetry();
   publishStatus(
     currentStatus("installing", {
       trigger: status.trigger,
@@ -411,7 +541,7 @@ export function installDownloadedUpdate(): boolean {
   try {
     manager.waitExitThenApplyUpdate(target, true, true);
     setTimeout(() => app.quit(), 80).unref();
-    return true;
+    return { ok: true };
   } catch (error) {
     updaterLog.error("Failed to start the Velopack apply process", error);
     publishStatus(
@@ -421,12 +551,16 @@ export function installDownloadedUpdate(): boolean {
         error: classifyError(error),
       }),
     );
-    return false;
+    return {
+      ok: false,
+      message: "Не удалось запустить установку обновления.",
+    };
   }
 }
 
 export function shutdownUpdater(): void {
   shuttingDown = true;
   clearSchedule();
+  clearDownloadRetry();
   targetWindow = null;
 }

@@ -23,7 +23,13 @@ export type AppUpdateStatus = {
   releaseNotes?: string;
   checkedAt?: number;
   error?: {
-    code: "network" | "checksum" | "locked" | "not-installed" | "unknown";
+    code:
+      | "network"
+      | "checksum"
+      | "disk-space"
+      | "locked"
+      | "not-installed"
+      | "unknown";
     message: string;
     retryable: boolean;
   };

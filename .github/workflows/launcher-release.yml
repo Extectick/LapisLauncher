@@ -7,7 +7,7 @@ on:
       - "launcher-v*"
 
 concurrency:
-  group: launcher-release-${{ github.ref }}
+  group: launcher-release-stable
   cancel-in-progress: false
 
 permissions: {}
@@ -84,6 +84,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     outputs:
       version: ${{ steps.version.outputs.version }}
+      previous_tag: ${{ steps.previous.outputs.tag }}
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,11 +133,21 @@ jobs:
         run: |
           $outputDirectory = "apps/launcher/release/velopack"
           New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-          $release = gh release list --exclude-drafts --exclude-pre-releases --limit 10 --json tagName |
+          $currentVersion = [version]"${{ steps.version.outputs.version }}"
+          $release = gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName |
             ConvertFrom-Json |
             Where-Object tagName -ne $env:GITHUB_REF_NAME |
+            ForEach-Object {
+              if ($_.tagName -match '^launcher-v(\d+\.\d+\.\d+)$') {
+                [pscustomobject]@{ tagName = $_.tagName; version = [version]$Matches[1] }
+              }
+            } |
+            Sort-Object version -Descending |
             Select-Object -First 1
           if ($release) {
+            if ($currentVersion -le $release.version) {
+              throw "Version $currentVersion must be newer than published $($release.version)."
+            }
             gh release download $release.tagName --pattern "*-full.nupkg" --dir $outputDirectory
             if ($LASTEXITCODE -ne 0) {
               throw "Unable to restore the previous full package."
@@ -254,6 +265,16 @@ jobs:
           if (-not $packages) {
             throw "Current release packages are missing."
           }
+          foreach ($asset in $currentAssets) {
+            $packagePath = Join-Path $releaseDirectory $asset.FileName
+            if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+              throw "Feed asset is missing locally: $($asset.FileName)."
+            }
+            $actualSha256 = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
+            if ($actualSha256 -ne $asset.SHA256) {
+              throw "SHA-256 mismatch for $($asset.FileName)."
+            }
+          }
           $fullPackage = $packages | Where-Object Name -Like "*-full.nupkg" | Select-Object -First 1
           if (-not $fullPackage -or $fullPackage.Length -gt 145MB) {
             throw "Full package is missing or exceeds the 145 MiB release budget."
@@ -362,7 +383,21 @@ jobs:
       - name: Verify public update feed
         env:
           EXPECTED_VERSION: ${{ needs.package.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.package.outputs.previous_tag }}
         run: |
           set -euo pipefail
           feed="$(curl --fail --silent --show-error --retry 5 --retry-all-errors --max-time 20 https://lapis-mc.ru/updates/releases.stable.json)"
           printf '%s' "$feed" | jq -e --arg version "$EXPECTED_VERSION" '.Assets | any(.Version == $version and .Type == "Full")'
+          if [ -n "$PREVIOUS_TAG" ]; then
+            printf '%s' "$feed" | jq -e --arg version "$EXPECTED_VERSION" '.Assets | any(.Version == $version and .Type == "Delta")'
+          fi
+          printf '%s' "$feed" | jq -r --arg version "$EXPECTED_VERSION" '.Assets[] | select(.Version == $version) | [.FileName, (.Size | tostring)] | @tsv' |
+            while IFS=$'\t' read -r file expected_size; do
+              [[ "$file" =~ ^LapisLauncher-[0-9]+\.[0-9]+\.[0-9]+-stable-(full|delta)\.nupkg$ ]]
+              actual_size="$(curl --fail --silent --show-error --retry 5 --retry-all-errors --max-time 20 --head "https://lapis-mc.ru/updates/$file" |
+                tr -d '\r' | awk 'tolower($1) == "content-length:" { print $2 }' | tail -n1)"
+              test "$actual_size" = "$expected_size"
+              expected_sha256="$(printf '%s' "$feed" | jq -r --arg file "$file" '.Assets[] | select(.FileName == $file) | .SHA256 | ascii_downcase')"
+              actual_sha256="$(curl --fail --silent --show-error --retry 5 --retry-all-errors --max-time 300 "https://lapis-mc.ru/updates/$file" | sha256sum | awk '{ print $1 }')"
+              test "$actual_sha256" = "$expected_sha256"
+            done

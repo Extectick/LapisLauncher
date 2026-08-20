@@ -42,7 +42,7 @@ import {
   ServerCatalogItem,
   signedInstallManifestSchema,
 } from "@lapis/contracts";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import {
   ensureJavaRuntime,
   ensureMinecraftRuntime,
@@ -64,13 +64,14 @@ import {
 import type { AppUpdateStatus } from "../shared/update-types";
 
 // Velopack lifecycle hooks must be registered before the rest of the Electron
-// application starts. This also completes or cleans up a pending update after
-// a restart without involving the renderer.
-VelopackApp.build().setAutoApplyOnStartup(true).run();
+// application starts. Pending updates are applied explicitly after the
+// Minecraft install guard has been restored, never before normal startup.
+VelopackApp.build().setAutoApplyOnStartup(false).run();
 
 const API_URL = process.env.LAPIS_API_URL ?? "https://lapis-mc.ru/api";
 const SESSION_FILE = "session.bin";
 const LAUNCH_SETTINGS_FILE = "launch-settings.json";
+const RUNNING_GAME_FILE = "running-game.json";
 const WINDOWS_APP_ID = "ru.lapis.launcher";
 const WINDOW_ICON_PATH = join(__dirname, "../renderer/logo.ico");
 const PRODUCTION_MANIFEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -88,6 +89,8 @@ function apiUrl(path: string): string {
 
 // Keep the launcher profile next to game instances instead of Electron's roaming default.
 app.setPath("userData", join(homedir(), ".lapis", "launcher"));
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 
 type User = { id: string; nickname: string };
 type ApiAuthResponse = {
@@ -109,6 +112,13 @@ type RunningGame = {
   logPath: string;
 };
 type RunningGameStatus = Pick<RunningGame, "pid" | "serverId" | "nickname">;
+const runningGameSchema = z.object({
+  pid: z.number().int().positive(),
+  serverId: z.string().min(1).max(64),
+  nickname: z.string().min(1).max(16),
+  launchedAt: z.number().int().positive(),
+  logPath: z.string().min(1),
+});
 type LaunchSettings = {
   memoryMb: number;
   recommendedMemoryMb: number;
@@ -559,8 +569,63 @@ function processIsRunning(pid: number): boolean {
   }
 }
 
+async function processMatchesPersistedGame(
+  game: RunningGame,
+): Promise<boolean> {
+  if (!processIsRunning(game.pid)) return false;
+  if (process.platform !== "win32") return true;
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${game.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
+      ],
+      { windowsHide: true, timeout: 5_000 },
+    );
+    const processStartedAt = Date.parse(stdout.trim());
+    return (
+      Number.isFinite(processStartedAt) &&
+      Math.abs(processStartedAt - game.launchedAt) < 60_000
+    );
+  } catch {
+    return false;
+  }
+}
+
+function runningGameStatePath(): string {
+  return join(app.getPath("userData"), RUNNING_GAME_FILE);
+}
+
+async function persistRunningGame(game: RunningGame): Promise<void> {
+  await mkdir(app.getPath("userData"), { recursive: true });
+  const path = runningGameStatePath();
+  const temporary = `${path}.tmp`;
+  await writeFile(temporary, JSON.stringify(game), "utf8");
+  await rename(temporary, path);
+}
+
+async function restoreRunningGame(): Promise<void> {
+  const path = runningGameStatePath();
+  try {
+    const restored = runningGameSchema.parse(
+      JSON.parse(await readFile(path, "utf8")),
+    );
+    if (!(await processMatchesPersistedGame(restored)))
+      throw new Error("Persisted Minecraft process identity does not match.");
+    runningGame = restored;
+    if (await currentRunningGame()) startGameProcessMonitor();
+  } catch {
+    runningGame = null;
+    await rm(path, { force: true }).catch(() => undefined);
+  }
+}
+
 function clearRunningGame(): void {
   runningGame = null;
+  void rm(runningGameStatePath(), { force: true }).catch(() => undefined);
   if (gameProcessMonitor) clearInterval(gameProcessMonitor);
   gameProcessMonitor = null;
   gameLogWatcher?.close();
@@ -709,7 +774,13 @@ function createWindow(): void {
   });
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
-    if (mainWindow) void initializeUpdater(mainWindow);
+    if (mainWindow)
+      void initializeUpdater(mainWindow, {
+        installGuard: async () =>
+          (await currentRunningGame())
+            ? "Закройте Minecraft перед обновлением лаунчера."
+            : null,
+      });
   });
   mainWindow.on("focus", checkForUpdatesIfStale);
   mainWindow.on("closed", () => {
@@ -734,7 +805,17 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+if (hasSingleInstanceLock)
+  app.on("second-instance", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+
+app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
+  await restoreRunningGame();
   app.setAppUserModelId(WINDOWS_APP_ID);
   ipcMain.handle(
     "updates:status",
@@ -761,15 +842,11 @@ app.whenReady().then(() => {
       }) satisfies IpcResult<AppUpdateStatus>,
   );
   ipcMain.handle("updates:install", async () => {
-    if (await currentRunningGame())
+    const result = await installDownloadedUpdate();
+    if (!result.ok)
       return {
         ok: false,
-        error: { message: "Закройте Minecraft перед обновлением лаунчера." },
-      } satisfies IpcResult<null>;
-    if (!installDownloadedUpdate())
-      return {
-        ok: false,
-        error: { message: "Обновление ещё не готово к установке." },
+        error: { message: result.message },
       } satisfies IpcResult<null>;
     return { ok: true, data: null } satisfies IpcResult<null>;
   });
@@ -1109,6 +1186,11 @@ app.whenReady().then(() => {
           processExited = true;
           clearRunningGame();
         });
+        await persistRunningGame(runningGame);
+        if (processExited || !processIsRunning(runningGame.pid)) {
+          clearRunningGame();
+          throw new Error("Minecraft process exited during startup.");
+        }
         gameLogWatcher?.close();
         const activeLogName = basename(runningGame.logPath);
         // A first Minecraft launch creates `logs` lazily. Make the directory
