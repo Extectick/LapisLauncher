@@ -91,9 +91,9 @@ CI workflow `.github/workflows/launcher-release.yml` выполняет полн
 
 ```powershell
 # Сначала изменить version в apps/launcher/package.json и закоммитить.
-git tag launcher-v0.1.4
+git tag launcher-v0.1.5
 git push origin main
-git push origin launcher-v0.1.4
+git push origin launcher-v0.1.5
 ```
 
 ## Публикация

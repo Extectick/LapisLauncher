@@ -73,11 +73,11 @@ const SESSION_FILE = "session.bin";
 const LAUNCH_SETTINGS_FILE = "launch-settings.json";
 const WINDOWS_APP_ID = "ru.lapis.launcher";
 const WINDOW_ICON_PATH = join(__dirname, "../renderer/logo.ico");
-const DEVELOPMENT_MANIFEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAGKwnxT59diFYHRUHn4Fgd0MO7Y/BfHa8P44p5NSXgMw=
+const PRODUCTION_MANIFEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAhN02b2cG2J1WYsRD1jzTHPIYgpkeWAwTgxsdGVnklB4=
 -----END PUBLIC KEY-----`;
 const MANIFEST_PUBLIC_KEY = (
-  process.env.LAPIS_MANIFEST_PUBLIC_KEY ?? DEVELOPMENT_MANIFEST_PUBLIC_KEY
+  process.env.LAPIS_MANIFEST_PUBLIC_KEY ?? PRODUCTION_MANIFEST_PUBLIC_KEY
 ).replace(/\\n/g, "\n");
 const execFileAsync = promisify(execFile);
 
