@@ -15,11 +15,13 @@ const DEFAULT_SKIN: PlayerSkin = {
     "https://textures.minecraft.net/texture/6d3b06c38504ffc0229b9492147c69fcf59fd2ed7885f78502152f77b4d50de1",
   model: "default",
 };
-const SKIN_RESTORER_DIRECTORY = join(
-  process.env.LAPIS_SERVER_ROOT ?? "V:\\LapisServer",
-  "world",
-  "skinrestorer",
-);
+const SKIN_RESTORER_DIRECTORY =
+  process.env.LAPIS_SKIN_RESTORER_DIRECTORY ??
+  join(
+    process.env.LAPIS_SERVER_ROOT ?? "V:\\LapisServer",
+    "world",
+    "skinrestorer",
+  );
 const PNG_SIGNATURE = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);

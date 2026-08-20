@@ -11,8 +11,11 @@ async function bootstrap(): Promise<void> {
   }
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({ logger: true }));
   app.enableCors({ origin: ['http://localhost:5173', 'http://localhost:5174'], methods: ['GET', 'POST'] });
-  await app.listen({ port: Number(process.env.PORT ?? 3000), host: '127.0.0.1' });
-  Logger.log('Lapis API is listening on loopback.', 'Bootstrap');
+  app.enableShutdownHooks();
+  const host = process.env.HOST ?? '127.0.0.1';
+  const port = Number(process.env.PORT ?? 3000);
+  await app.listen({ port, host });
+  Logger.log(`Lapis API is listening on ${host}:${port}.`, 'Bootstrap');
 }
 
 void bootstrap();

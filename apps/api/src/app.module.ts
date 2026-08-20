@@ -11,6 +11,7 @@ import { GameTicketsController } from "./servers/game-tickets.controller";
 import { ContentController } from "./servers/content.controller";
 import { ProfileController } from "./profile/profile.controller";
 import { SkinService } from "./profile/skin.service";
+import { HealthController } from "./health.controller";
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { SkinService } from "./profile/skin.service";
     }),
   ],
   controllers: [
+    HealthController,
     AuthController,
     ServersController,
     GameTicketsController,

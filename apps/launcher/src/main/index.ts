@@ -68,7 +68,7 @@ import type { AppUpdateStatus } from "../shared/update-types";
 // a restart without involving the renderer.
 VelopackApp.build().setAutoApplyOnStartup(true).run();
 
-const API_URL = process.env.LAPIS_API_URL ?? "http://127.0.0.1:3000";
+const API_URL = process.env.LAPIS_API_URL ?? "https://api.lapis-mc.ru";
 const SESSION_FILE = "session.bin";
 const LAUNCH_SETTINGS_FILE = "launch-settings.json";
 const WINDOWS_APP_ID = "ru.lapis.launcher";

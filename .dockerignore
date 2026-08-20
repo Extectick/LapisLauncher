@@ -1,0 +1,16 @@
+.git
+.github
+.local
+.env
+.env.*
+!.env.example
+!.env.production.example
+node_modules
+**/node_modules
+**/dist
+**/out
+**/build
+**/release
+coverage
+.lapis
+*.log
