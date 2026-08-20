@@ -10,16 +10,65 @@ concurrency:
   group: launcher-release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  attestations: write
-  id-token: write
+permissions: {}
 
 jobs:
+  validate:
+    name: Validate source and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: lapis_test
+          POSTGRES_USER: lapis
+          POSTGRES_PASSWORD: lapis
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U lapis -d lapis_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.32.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @lapis/api prisma:generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Run tests
+        run: pnpm test
+
   package:
     name: Build signed Windows release
+    needs: validate
     runs-on: windows-latest
     timeout-minutes: 35
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
     outputs:
@@ -72,7 +121,10 @@ jobs:
         run: |
           $outputDirectory = "apps/launcher/release/velopack"
           New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-          $release = gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName | ConvertFrom-Json | Select-Object -First 1
+          $release = gh release list --exclude-drafts --exclude-pre-releases --limit 10 --json tagName |
+            ConvertFrom-Json |
+            Where-Object tagName -ne $env:GITHUB_REF_NAME |
+            Select-Object -First 1
           if ($release) {
             gh release download $release.tagName --pattern "*-full.nupkg" --dir $outputDirectory
             if ($LASTEXITCODE -ne 0) {
@@ -125,11 +177,6 @@ jobs:
           }
           "LAPIS_SIGNING_CERTIFICATE=$certificatePath" >> $env:GITHUB_ENV
 
-      - name: Typecheck and test
-        run: |
-          pnpm typecheck
-          pnpm --filter @lapis/launcher build
-
       - name: Build signed Velopack release
         shell: pwsh
         env:
@@ -170,6 +217,10 @@ jobs:
           $currentAssets = @($feed.Assets | Where-Object Version -eq $currentVersion)
           if (-not ($currentAssets | Where-Object Type -eq "Full")) {
             throw "Velopack feed does not contain the current full package."
+          }
+          $previousTag = "${{ steps.previous.outputs.tag }}"
+          if ($previousTag -and -not ($currentAssets | Where-Object Type -eq "Delta")) {
+            throw "Velopack feed does not contain a delta package from $previousTag."
           }
           $packages = Get-ChildItem $releaseDirectory -File -Filter "LapisLauncher-$currentVersion-stable-*.nupkg"
           if (-not $packages) {
@@ -252,6 +303,7 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > "$HOME/.ssh/lapis-updates-deploy"
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/lapis-updates-deploy" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/lapis-updates-deploy" > /dev/null
 
       - name: Publish packages and metadata atomically
         env:
@@ -265,9 +317,10 @@ jobs:
           remote="$DEPLOY_USER@$DEPLOY_HOST"
           target="/var/www/lapis-updates"
           stage="$target/.staging-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$remote" "install -d -m 755 '$stage'"
-          scp -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes release/* "$remote:$stage/"
-          ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$remote" "set -eu; \
+          ssh_options=(-i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15)
+          ssh "${ssh_options[@]}" "$remote" "install -d -m 755 '$stage'"
+          scp "${ssh_options[@]}" release/* "$remote:$stage/"
+          ssh "${ssh_options[@]}" "$remote" "set -eu; \
             for file in '$stage'/*.nupkg '$stage'/*-Setup.exe; do [ ! -e \"\$file\" ] || mv -f \"\$file\" '$target/'; done; \
             for name in assets.stable.json RELEASES-stable; do [ ! -e '$stage/'\"\$name\" ] || mv -f '$stage/'\"\$name\" '$target/'\"\$name\"; done; \
             test -f '$stage/releases.stable.json'; \
