@@ -85,7 +85,6 @@ model BuildMod {
   id        String    @id @default(uuid()) @db.Uuid
   buildId   String    @map("build_id") @db.VarChar(64)
   fileName  String    @map("file_name") @db.VarChar(180)
-  url       String
   sha1      String    @db.Char(40)
   required  Boolean   @default(true)
   build     GameBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
