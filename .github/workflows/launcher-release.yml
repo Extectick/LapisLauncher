@@ -203,6 +203,23 @@ jobs:
         run: |
           $releaseDirectory = "apps/launcher/release/velopack"
           $setup = Get-Item "$releaseDirectory/LapisLauncher-stable-Setup.exe"
+          if ($setup.Length -gt 150MB) {
+            throw "Setup exceeds the 150 MiB release budget: $($setup.Length) bytes."
+          }
+          $appAsar = Get-Item "apps/launcher/release/electron/win-unpacked/resources/app.asar"
+          if ($appAsar.Length -gt 15MB) {
+            throw "app.asar exceeds the 15 MiB release budget: $($appAsar.Length) bytes."
+          }
+          $expectedLocales = @("en-US.pak", "ru.pak")
+          $actualLocales = @(
+            Get-ChildItem "apps/launcher/release/electron/win-unpacked/locales" -File |
+              Select-Object -ExpandProperty Name
+          )
+          $unexpectedLocales = @($actualLocales | Where-Object { $_ -notin $expectedLocales })
+          $missingLocales = @($expectedLocales | Where-Object { $_ -notin $actualLocales })
+          if ($unexpectedLocales.Count -or $missingLocales.Count) {
+            throw "Unexpected Electron locales. Actual: $($actualLocales -join ', ')."
+          }
           $signature = Get-AuthenticodeSignature -LiteralPath $setup.FullName
           $allowedStatuses = @("Valid", "NotTrusted", "UnknownError")
           if ($signature.Status.ToString() -notin $allowedStatuses) {
@@ -236,6 +253,10 @@ jobs:
           $packages = Get-ChildItem $releaseDirectory -File -Filter "LapisLauncher-$currentVersion-stable-*.nupkg"
           if (-not $packages) {
             throw "Current release packages are missing."
+          }
+          $fullPackage = $packages | Where-Object Name -Like "*-full.nupkg" | Select-Object -First 1
+          if (-not $fullPackage -or $fullPackage.Length -gt 145MB) {
+            throw "Full package is missing or exceeds the 145 MiB release budget."
           }
 
       - name: Upload workflow artifact

@@ -84,12 +84,6 @@ importers:
       '@electron-toolkit/utils':
         specifier: ^4.0.0
         version: 4.0.0(electron@38.8.6)
-      '@fortawesome/free-solid-svg-icons':
-        specifier: ^7.3.1
-        version: 7.3.1
-      '@fortawesome/react-fontawesome':
-        specifier: ^3.5.0
-        version: 3.5.0(@fortawesome/fontawesome-svg-core@7.3.1)(react@19.2.8)
       '@lapis/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -99,15 +93,6 @@ importers:
       electron-log:
         specifier: 5.4.3
         version: 5.4.3
-      react:
-        specifier: ^19.1.1
-        version: 19.2.8
-      react-dom:
-        specifier: ^19.1.1
-        version: 19.2.8(react@19.2.8)
-      skinview3d:
-        specifier: ^3.4.2
-        version: 3.4.2
       velopack:
         specifier: 1.2.0
         version: 1.2.0
@@ -115,6 +100,12 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
+      '@fortawesome/free-solid-svg-icons':
+        specifier: ^7.3.1
+        version: 7.3.1
+      '@fortawesome/react-fontawesome':
+        specifier: ^3.5.0
+        version: 3.5.0(@fortawesome/fontawesome-svg-core@7.3.1)(react@19.2.8)
       '@types/node':
         specifier: ^22.17.2
         version: 22.20.1
@@ -136,6 +127,15 @@ importers:
       electron-vite:
         specifier: ^4.0.0
         version: 4.0.1(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(tsx@4.23.12))
+      react:
+        specifier: ^19.1.1
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.1.1
+        version: 19.2.8(react@19.2.8)
+      skinview3d:
+        specifier: ^3.4.2
+        version: 3.4.2
       typescript:
         specifier: ^5.9.2
         version: 5.9.3

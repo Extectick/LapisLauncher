@@ -32,8 +32,11 @@
 - [x] Нативный Velopack `.node` externalized из Vite и распаковывается из ASAR.
 - [x] В Windows package остаётся только `velopack_nodeffi_win_x64_msvc.node`.
 - [x] Добавлен allowlist Electron-файлов. Устранено рекурсивное включение `release` в `app.asar`.
-- [x] `app.asar` уменьшен примерно с 799 МБ до 40,7 МБ.
-- [x] Локально создан корректный feed 0.1.2: full package около 153 МБ, Setup около 157 МБ.
+- [x] `app.asar` уменьшен примерно с 799 МБ до 10,8 МБ: renderer-only зависимости не дублируются, source maps исключены.
+- [x] В Electron package оставлены только локали `ru` и `en-US`; каталог locales уменьшен примерно с 43,7 до 1,5 МБ.
+- [x] Фоновое видео перекодировано в H.264/30 FPS с faststart (7,49 → 1,36 МБ), логотип оптимизирован до 512×512 (1,74 → 0,32 МБ).
+- [x] CI блокирует регрессию размера: Setup ≤150 MiB, full package ≤145 MiB, `app.asar` ≤15 MiB и ровно две разрешённые локали.
+- [x] Локально создан подписанный feed 0.1.4: full package 130,08 MiB, Setup 134,48 MiB, delta 0.1.3 → 0.1.4 — 1,84 MiB.
 - [x] Добавлен GitHub Actions workflow с проверкой версии тега, обязательной подписью и проверкой Authenticode.
 - [x] Production-команда fail-fast блокирует неподписанный release.
 - [x] Добавлен Nginx-конфиг для Velopack metadata с отключённым кэшем.
@@ -46,7 +49,7 @@
 - [x] Полный `pnpm typecheck` для workspace и `pnpm test` (4/4 auth e2e).
 - [x] В main bundle присутствует внешний `require("velopack")`.
 - [x] В package присутствует ровно нужный Windows x64 native-модуль.
-- [x] `releases.stable.json` содержит SHA-1, SHA-256, размер и версию 0.1.2.
+- [x] Локальный `releases.stable.json` содержит SHA-1, SHA-256, Full и Delta для версии 0.1.4.
 - [x] Локальный Setup подтверждён как `NotSigned`; это ожидаемый smoke-артефакт, публиковать его нельзя.
 - [x] Проверено, что production build без signing secret завершается ошибкой до сборки.
 - [x] Добавлена повторяемая команда `pnpm package:win:dev-signed`: создаёт неэкспортируемый RSA-3072/SHA-256 self-signed сертификат с Code Signing EKU, доверенный только текущему пользователю.
@@ -58,26 +61,24 @@
 - [x] Nginx-конфигурация Velopack применена на VPS, `nginx -t` успешен; сохранён backup прежнего конфига.
 - [x] Workflow проверен YAML parser и actionlint 1.7.12 без ошибок.
 
-## Требуется перед production-проверкой
+## Требуется перед публичным распространением
 
 - [ ] Получить EV/OV Code Signing certificate или настроить Azure Trusted Signing.
 - [ ] Перед публичным распространением заменить текущий self-signed CI-сертификат в GitHub Secrets на публично доверенный Code Signing или Azure Artifact Signing.
-- [ ] Закоммитить и отправить текущую реализацию в `Extectick/LapisLauncher`, затем опубликовать тег базового release. До первого успешного workflow `https://lapis-mc.ru/updates/releases.stable.json` возвращает 404.
+- [x] Репозиторий, GitHub Release и HTTPS feed настроены; release workflow 0.1.3 полностью прошёл и опубликован на `lapis-mc.ru`.
 - [ ] Решить миграцию старых NSIS test-installations. Для текущих локальных тестов удалить старую установленную тестовую версию и один раз установить Velopack Setup. Если старый NSIS уже раздавался внешним пользователям, нужен отдельный bridge-release/инструкция деинсталляции.
 
-## Ручной acceptance test 0.1.2 → 0.1.3
+## Ручной acceptance test 0.1.3 → 0.1.4
 
-1. Собрать подписанную 0.1.2 командой `pnpm package:win:release` и проверить `Get-AuthenticodeSignature` со статусом `Valid`.
-2. Опубликовать packages/Setup, затем metadata; проверить HTTPS, `Content-Type` и `Cache-Control: no-store` для `releases.stable.json`.
-3. Установить `LapisLauncher-stable-Setup.exe`, войти в аккаунт, запустить/закрыть Minecraft и перезапустить launcher.
-4. Не очищая `apps/launcher/release/velopack`, поднять версию до 0.1.3, добавить release notes и снова выполнить production build.
-5. Убедиться, что создан `0.1.3-stable-delta.nupkg`, а feed содержит 0.1.2 и 0.1.3.
-6. Опубликовать 0.1.3 атомарно. На уже открытой 0.1.2 должна появиться надпись «Доступно обновление» и рабочее модальное окно.
-7. Для startup-пути заново запустить 0.1.2: должен появиться gate, пройти delta download, launcher должен закрыться, обновиться и запуститься как 0.1.3.
-8. Во время запущенного Minecraft установка должна отказать с понятным сообщением; после закрытия Minecraft — выполниться.
-9. Отключить сеть: launcher должен открыться с сохранённой авторизацией, а updater — перейти в retry без logout.
-10. Проверить сохранность `%USERPROFILE%\.lapis\launcher`, `%USERPROFILE%\.lapis\instances`, сессии, настроек памяти и скина.
+1. Установить опубликованный Setup 0.1.3, войти в аккаунт и убедиться, что профиль `%USERPROFILE%\.lapis` сохранён.
+2. Опубликовать тег `launcher-v0.1.4`; workflow обязан создать Full и Delta, проверить подпись/лимиты размера и атомарно заменить feed.
+3. На уже открытой 0.1.3 должна появиться надпись «Доступно обновление» и рабочее модальное окно.
+4. Для startup-пути заново запустить 0.1.3: должен появиться gate, пройти delta download, launcher должен закрыться, обновиться и запуститься как 0.1.4.
+5. После обновления проверить версию, видео, логотип, авторизацию, настройки, скин и запуск Minecraft.
+6. Во время запущенного Minecraft установка должна отказать с понятным сообщением; после закрытия Minecraft — выполниться.
+7. Отключить сеть: launcher должен открыться с сохранённой авторизацией, а updater — перейти в retry без logout.
+8. Проверить сохранность `%USERPROFILE%\.lapis\launcher`, `%USERPROFILE%\.lapis\instances`, сессии, настроек памяти и скина.
 
 ## Критерий готовности
 
-Миграция считается production-завершённой после успешного подписанного теста 0.1.2 → 0.1.3 через реальный `lapis-mc.ru`, включая delta, startup update, already-open update, сетевую ошибку и сохранность пользовательских данных.
+Миграция считается production-завершённой после ручного подписанного теста 0.1.3 → 0.1.4 через реальный `lapis-mc.ru`, включая delta, startup update, already-open update, сетевую ошибку и сохранность пользовательских данных.

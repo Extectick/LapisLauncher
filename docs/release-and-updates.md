@@ -91,9 +91,9 @@ CI workflow `.github/workflows/launcher-release.yml` выполняет полн
 
 ```powershell
 # Сначала изменить version в apps/launcher/package.json и закоммитить.
-git tag launcher-v0.1.3
+git tag launcher-v0.1.4
 git push origin main
-git push origin launcher-v0.1.3
+git push origin launcher-v0.1.4
 ```
 
 ## Публикация
@@ -111,4 +111,4 @@ Nginx-конфигурация находится в `deploy/nginx/lapis-mc-upda
 
 ## Проверка обновления
 
-Полный сценарий описан и отслеживается в `docs/velopack-migration-status.md`. Коротко: опубликовать подписанную базовую 0.1.2, установить Setup, затем собрать и опубликовать 0.1.3 при сохранённых артефактах 0.1.2. Проверяется автоматический startup update, уведомление уже открытого launcher, delta download, подпись и сохранность `%USERPROFILE%\.lapis`.
+Полный сценарий описан и отслеживается в `docs/velopack-migration-status.md`. Актуальная проверка выполняется с установленной 0.1.3 после публикации 0.1.4. Проверяются автоматический startup update, уведомление уже открытого launcher, delta download, подпись, оптимизированные медиа и сохранность `%USERPROFILE%\.lapis`.
