@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { AppUpdateStatus } from "../shared/update-types";
 
 type AuthInput = { nickname: string; password: string };
 type AuthResult = {
@@ -40,21 +41,6 @@ type LaunchSettings = {
   maxMemoryMb: number;
   fullscreen: boolean;
 };
-type AppUpdateStatus = {
-  currentVersion: string;
-  phase:
-    | "disabled"
-    | "idle"
-    | "checking"
-    | "available"
-    | "downloading"
-    | "downloaded"
-    | "not-available"
-    | "error";
-  version?: string;
-  progress?: number;
-};
-
 contextBridge.exposeInMainWorld("lapis", {
   auth: {
     register: (input: AuthInput): Promise<IpcResult<AuthResult>> =>
@@ -82,10 +68,13 @@ contextBridge.exposeInMainWorld("lapis", {
       ipcRenderer.invoke("updates:check"),
     download: (): Promise<IpcResult<AppUpdateStatus>> =>
       ipcRenderer.invoke("updates:download"),
-    install: (): Promise<IpcResult<null>> => ipcRenderer.invoke("updates:install"),
+    install: (): Promise<IpcResult<null>> =>
+      ipcRenderer.invoke("updates:install"),
     onStatus: (callback: (status: AppUpdateStatus) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, status: AppUpdateStatus): void =>
-        callback(status);
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        status: AppUpdateStatus,
+      ): void => callback(status);
       ipcRenderer.on("updates:status", listener);
       return () => ipcRenderer.removeListener("updates:status", listener);
     },

@@ -1,6 +1,6 @@
 {
   "name": "@lapis/launcher",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "LapisLauncher for managed Fabric Minecraft builds",
   "author": "Lapis Launcher",
   "private": true,
@@ -9,7 +9,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package:win": "electron-vite build && electron-builder --win nsis --publish never"
+    "package:win": "electron-vite build && electron-builder --win --dir && node scripts/package-velopack.mjs",
+    "package:win:release": "node scripts/check-release-signing.mjs && electron-vite build && electron-builder --win --dir && node scripts/package-velopack.mjs --release"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
@@ -17,10 +18,11 @@
     "@fortawesome/react-fontawesome": "^3.5.0",
     "@lapis/contracts": "workspace:*",
     "@lapis/minecraft-core": "workspace:*",
-    "electron-updater": "^6.8.9",
+    "electron-log": "5.4.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "skinview3d": "^3.4.2",
+    "velopack": "1.2.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
@@ -37,10 +39,20 @@
   "build": {
     "appId": "ru.lapis.launcher",
     "productName": "LapisLauncher",
-    "artifactName": "LapisLauncher-Setup-${version}.${ext}",
     "asar": true,
+    "files": [
+      "out/**/*",
+      "package.json",
+      "!node_modules/velopack/lib/native/*linux*",
+      "!node_modules/velopack/lib/native/*osx*",
+      "!node_modules/velopack/lib/native/*arm64*",
+      "!node_modules/velopack/lib/native/*x86_msvc*"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
     "directories": {
-      "output": "release"
+      "output": "release/electron"
     },
     "extraResources": [
       {
@@ -48,32 +60,8 @@
         "to": "update-config.json"
       }
     ],
-    "publish": [
-      {
-        "provider": "generic",
-        "url": "https://updates.invalid/LapisLauncher"
-      }
-    ],
     "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "src/renderer/public/logo.ico",
-      "signtoolOptions": {
-        "publisherName": "Lapis Launcher"
-      },
-      "verifyUpdateCodeSignature": true
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "icon": "src/renderer/public/logo.ico"
     }
   }
 }

@@ -6,6 +6,8 @@
     "dev:api": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/api dev",
     "dev:launcher": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/minecraft-core build && pnpm --filter @lapis/launcher dev",
     "package:win": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/minecraft-core build && pnpm --filter @lapis/launcher package:win",
+    "package:win:dev-signed": "pwsh -NoProfile -File apps/launcher/scripts/package-dev-signed.ps1",
+    "package:win:release": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/minecraft-core build && pnpm --filter @lapis/launcher package:win:release",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",

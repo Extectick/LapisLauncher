@@ -7,6 +7,7 @@ import {
   safeStorage,
   shell,
 } from "electron";
+import { VelopackApp } from "velopack";
 import type { OpenDialogOptions } from "electron";
 import { is } from "@electron-toolkit/utils";
 import { FSWatcher, watch } from "node:fs";
@@ -53,12 +54,19 @@ import {
 } from "@lapis/minecraft-core";
 import {
   checkForUpdates,
+  checkForUpdatesIfStale,
   downloadUpdate,
   getUpdateStatus,
   initializeUpdater,
   installDownloadedUpdate,
-  type AppUpdateStatus,
+  shutdownUpdater,
 } from "./updater";
+import type { AppUpdateStatus } from "../shared/update-types";
+
+// Velopack lifecycle hooks must be registered before the rest of the Electron
+// application starts. This also completes or cleans up a pending update after
+// a restart without involving the renderer.
+VelopackApp.build().setAutoApplyOnStartup(true).run();
 
 const API_URL = process.env.LAPIS_API_URL ?? "http://127.0.0.1:3000";
 const SESSION_FILE = "session.bin";
@@ -133,14 +141,20 @@ function launchSettingsPath(): string {
   return join(app.getPath("userData"), LAUNCH_SETTINGS_FILE);
 }
 
-function memoryLimits(): Pick<LaunchSettings, "recommendedMemoryMb" | "maxMemoryMb"> {
+function memoryLimits(): Pick<
+  LaunchSettings,
+  "recommendedMemoryMb" | "maxMemoryMb"
+> {
   const totalMb = Math.floor(totalmem() / (1024 * 1024));
-  const maxMemoryMb = Math.max(
-    1024,
-    Math.floor(totalMb / 512) * 512,
-  );
+  const maxMemoryMb = Math.max(1024, Math.floor(totalMb / 512) * 512);
   const baseline =
-    totalMb >= 32 * 1024 ? 8192 : totalMb >= 16 * 1024 ? 6144 : totalMb >= 8 * 1024 ? 4096 : 2048;
+    totalMb >= 32 * 1024
+      ? 8192
+      : totalMb >= 16 * 1024
+        ? 6144
+        : totalMb >= 8 * 1024
+          ? 4096
+          : 2048;
   return {
     maxMemoryMb,
     recommendedMemoryMb: Math.min(baseline, maxMemoryMb),
@@ -163,7 +177,11 @@ async function getLaunchSettings(serverId: string): Promise<LaunchSettings> {
       await readFile(launchSettingsPath(), "utf8"),
     ) as StoredLaunchSettings;
     const value = saved[serverId];
-    if (!value || typeof value.fullscreen !== "boolean" || !Number.isInteger(value.memoryMb))
+    if (
+      !value ||
+      typeof value.fullscreen !== "boolean" ||
+      !Number.isInteger(value.memoryMb)
+    )
       return defaults;
     return {
       ...defaults,
@@ -193,11 +211,16 @@ async function saveLaunchSettings(
     throw new ApiError("Некорректные настройки запуска.");
   let saved: StoredLaunchSettings = {};
   try {
-    saved = JSON.parse(await readFile(launchSettingsPath(), "utf8")) as StoredLaunchSettings;
+    saved = JSON.parse(
+      await readFile(launchSettingsPath(), "utf8"),
+    ) as StoredLaunchSettings;
   } catch {
     // First launch: settings file does not exist yet.
   }
-  saved[serverId] = { memoryMb: settings.memoryMb, fullscreen: settings.fullscreen };
+  saved[serverId] = {
+    memoryMb: settings.memoryMb,
+    fullscreen: settings.fullscreen,
+  };
   await mkdir(app.getPath("userData"), { recursive: true });
   const temporary = `${launchSettingsPath()}.tmp`;
   await writeFile(temporary, JSON.stringify(saved), "utf8");
@@ -697,6 +720,10 @@ function createWindow(): void {
     mainWindow?.show();
     if (mainWindow) void initializeUpdater(mainWindow);
   });
+  mainWindow.on("focus", checkForUpdatesIfStale);
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https:")) void shell.openExternal(url);
     return { action: "deny" };
@@ -718,18 +745,30 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   app.setAppUserModelId(WINDOWS_APP_ID);
-  ipcMain.handle("updates:status", async () => ({
-    ok: true,
-    data: getUpdateStatus(),
-  }) satisfies IpcResult<AppUpdateStatus>);
-  ipcMain.handle("updates:check", async () => ({
-    ok: true,
-    data: await checkForUpdates(),
-  }) satisfies IpcResult<AppUpdateStatus>);
-  ipcMain.handle("updates:download", async () => ({
-    ok: true,
-    data: await downloadUpdate(),
-  }) satisfies IpcResult<AppUpdateStatus>);
+  ipcMain.handle(
+    "updates:status",
+    async () =>
+      ({
+        ok: true,
+        data: getUpdateStatus(),
+      }) satisfies IpcResult<AppUpdateStatus>,
+  );
+  ipcMain.handle(
+    "updates:check",
+    async () =>
+      ({
+        ok: true,
+        data: await checkForUpdates("manual"),
+      }) satisfies IpcResult<AppUpdateStatus>,
+  );
+  ipcMain.handle(
+    "updates:download",
+    async () =>
+      ({
+        ok: true,
+        data: await downloadUpdate(),
+      }) satisfies IpcResult<AppUpdateStatus>,
+  );
   ipcMain.handle("updates:install", async () => {
     if (await currentRunningGame())
       return {
@@ -889,29 +928,44 @@ app.whenReady().then(() => {
       return { ok: false, error: { message } };
     }
   });
-  ipcMain.handle("runtime:launch-settings", async (_event, serverId: unknown) => {
-    if (!validServerId(serverId))
+  ipcMain.handle(
+    "runtime:launch-settings",
+    async (_event, serverId: unknown) => {
+      if (!validServerId(serverId))
+        return {
+          ok: false,
+          error: { message: "Некорректный сервер." },
+        } satisfies IpcResult<LaunchSettings>;
       return {
-        ok: false,
-        error: { message: "Некорректный сервер." },
+        ok: true,
+        data: await getLaunchSettings(serverId),
       } satisfies IpcResult<LaunchSettings>;
-    return {
-      ok: true,
-      data: await getLaunchSettings(serverId),
-    } satisfies IpcResult<LaunchSettings>;
-  });
+    },
+  );
   ipcMain.handle(
     "runtime:save-launch-settings",
     async (_event, serverId: unknown, settings: unknown) => {
       try {
-        if (!validServerId(serverId) || typeof settings !== "object" || settings === null)
+        if (
+          !validServerId(serverId) ||
+          typeof settings !== "object" ||
+          settings === null
+        )
           throw new ApiError("Некорректные настройки запуска.");
-        const input = settings as Partial<Pick<LaunchSettings, "memoryMb" | "fullscreen">>;
-        if (typeof input.memoryMb !== "number" || typeof input.fullscreen !== "boolean")
+        const input = settings as Partial<
+          Pick<LaunchSettings, "memoryMb" | "fullscreen">
+        >;
+        if (
+          typeof input.memoryMb !== "number" ||
+          typeof input.fullscreen !== "boolean"
+        )
           throw new ApiError("Некорректные настройки запуска.");
         return {
           ok: true,
-          data: await saveLaunchSettings(serverId, input as Pick<LaunchSettings, "memoryMb" | "fullscreen">),
+          data: await saveLaunchSettings(
+            serverId,
+            input as Pick<LaunchSettings, "memoryMb" | "fullscreen">,
+          ),
         } satisfies IpcResult<LaunchSettings>;
       } catch (error) {
         return {
@@ -1047,11 +1101,10 @@ app.whenReady().then(() => {
           serverId,
           nickname: parsedNickname.data,
           launchedAt,
+          // Use the same validated instance-path helper as install, removal
+          // and launch. This keeps monitoring correct if storage layout changes.
           logPath: join(
-            homedir(),
-            ".lapis",
-            "instances",
-            runtime.instanceId,
+            minecraftInstanceDirectory(runtime.instanceId),
             "logs",
             "latest.log",
           ),
@@ -1112,3 +1165,5 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+app.on("before-quit", shutdownUpdater);

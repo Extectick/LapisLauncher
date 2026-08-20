@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+import type { AppUpdateStatus } from "../../shared/update-types";
+
 type AuthResult = {
   user: { id: string; nickname: string };
   accessToken: string;
@@ -37,20 +39,6 @@ type LaunchSettings = {
   recommendedMemoryMb: number;
   maxMemoryMb: number;
   fullscreen: boolean;
-};
-type AppUpdateStatus = {
-  currentVersion: string;
-  phase:
-    | "disabled"
-    | "idle"
-    | "checking"
-    | "available"
-    | "downloading"
-    | "downloaded"
-    | "not-available"
-    | "error";
-  version?: string;
-  progress?: number;
 };
 type PlayerSkin = { textureUrl: string; model: "default" | "slim" };
 declare global {

@@ -721,6 +721,82 @@ button:focus-visible {
   color: #bed0e8;
   line-height: 1.45;
 }
+.launcher-update-dialog {
+  display: grid;
+  gap: 14px;
+}
+.launcher-update-version {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #91a9c6;
+  font-variant-numeric: tabular-nums;
+}
+.launcher-update-version b {
+  color: #6685a9;
+}
+.launcher-update-version strong {
+  color: #9dcdff;
+}
+.launcher-update-progress {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(116, 162, 218, 0.2);
+}
+.launcher-update-progress > span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #63adff, #9bd4ff);
+  transition: width 0.18s ease-out;
+}
+.launcher-update-notes {
+  max-height: 132px;
+  overflow: hidden auto;
+  padding: 11px 12px;
+  border: 1px solid rgba(125, 176, 244, 0.18);
+  border-radius: 10px;
+  color: #aabed7;
+  background: rgba(3, 13, 28, 0.3);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.startup-update-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(3, 12, 25, 0.34);
+  backdrop-filter: blur(5px);
+  animation: modal-fade 0.18s ease-out;
+}
+.startup-update-card {
+  display: grid;
+  width: 300px;
+  justify-items: center;
+  gap: 17px;
+  padding: 30px 34px;
+  border: 1px solid rgba(125, 176, 244, 0.36);
+  border-radius: 17px;
+  background: rgba(7, 20, 40, 0.8);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+}
+.startup-update-card .brand-lockup {
+  transform: scale(0.84);
+}
+.startup-update-card > p {
+  margin: -3px 0 0;
+  color: #c7dcf5;
+  font-size: 14px;
+}
+.startup-update-card .launcher-update-progress {
+  width: 220px;
+}
 .modal-card footer {
   display: flex;
   justify-content: flex-end;

@@ -204,9 +204,8 @@ flowchart LR
 - React.
 - TypeScript.
 - Vite / `electron-vite`.
-- `electron-builder`.
-- NSIS per-user installer.
-- `electron-updater` с generic HTTPS provider.
+- `electron-builder` только для production `win-unpacked`.
+- Velopack per-user installer и delta-first self-update; npm/CLI версии закреплены одинаково.
 - Tailwind CSS.
 - Radix UI primitives или локальные shadcn-style компоненты без удалённой runtime-зависимости.
 - React Router.
@@ -1247,35 +1246,30 @@ Accept-Ranges: bytes
 - проверка выполняется до экрана входа;
 - новая версия обязательна;
 - API также возвращает `minimumSupportedLauncherVersion`;
-- installer — NSIS per-user `.exe`;
-- install path — `%LOCALAPPDATA%\Programs\Lapis`;
-- `appId` должен быть стабильным и никогда не меняться;
-- release artifact и metadata раздаются по HTTPS;
-- проверяется SHA-512 и отдельная Ed25519-подпись release manifest;
-- обновление скачивается во временный каталог;
-- установка запускается только после проверки;
-- при ошибке показываются `Повторить` и технические детали без секретов;
+- installer — Velopack per-user Setup `.exe`;
+- package ID, channel и main EXE должны быть стабильными и никогда не меняться;
+- full/delta packages и `releases.stable.json` раздаются по HTTPS;
+- Velopack проверяет хеши packages, а Windows доверяет только Authenticode-подписанному release;
+- сначала используется delta, при невозможности — автоматический fallback на full package;
+- установка запускается только после проверки и после закрытия Minecraft;
+- при ошибке показываются `Повторить` и безопасное сообщение, технические детали без секретов пишутся только в локальный ограниченный лог;
+- одна операция check/download, редкий scheduler с jitter и backoff, без постоянного polling;
 - сохраняется возможность отката на предыдущий release на стороне публикации.
 
-Пример release manifest:
+Основной feed формируется только Velopack CLI. Не создавать его вручную:
 
 ```json
 {
-  "payload": {
-    "channel": "stable",
-    "version": "1.0.3",
-    "minimumSupportedVersion": "1.0.2",
-    "artifactUrl": "https://cdn.<DOMAIN>/launcher/Lapis-Setup-1.0.3.exe",
-    "sha512": "<HASH>",
-    "size": 123456789,
-    "releasedAt": "2026-08-16T12:00:00Z",
-    "mandatory": true
-  },
-  "signature": {
-    "algorithm": "Ed25519",
-    "keyId": "lapis-release-2026-01",
-    "value": "<BASE64>"
-  }
+  "Assets": [
+    {
+      "PackageId": "LapisLauncher",
+      "Version": "1.0.3",
+      "Type": "Full",
+      "FileName": "LapisLauncher-1.0.3-stable-full.nupkg",
+      "SHA256": "<HASH>",
+      "Size": 123456789
+    }
+  ]
 }
 ```
 
@@ -1809,9 +1803,9 @@ Restore script по умолчанию требует явный target и не 
 
 - только tag/manual protected workflow;
 - сборка Windows runner;
-- формирование NSIS `.exe`;
-- SHA-512;
-- Ed25519 release manifest signing через protected secret/signing step;
+- формирование Velopack Setup, full и delta packages;
+- обязательная Authenticode-подпись через protected secret/Azure Trusted Signing и timestamp;
+- feed генерируется закреплённым Velopack CLI;
 - publication на content storage;
 - запись release в API;
 - smoke test updater;
@@ -2036,7 +2030,7 @@ MVP принят только если выполняются все услов�
 ### Этап 9. Admin и release pipeline
 
 - server/build/release management;
-- NSIS;
+- Velopack;
 - self-update;
 - stable publication.
 
@@ -2116,8 +2110,8 @@ MVP принят только если выполняются все услов�
   https://www.electronjs.org/docs/latest/tutorial/security
 - Electron safeStorage:  
   https://www.electronjs.org/docs/latest/api/safe-storage
-- Electron Builder NSIS:  
-  https://www.electron.build/docs/nsis/
+- Velopack:
+  https://docs.velopack.io/
 - Eclipse Temurin:  
   https://adoptium.net/temurin/releases
 - Adoptium API:  

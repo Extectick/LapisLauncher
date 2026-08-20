@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import type { ButtonHTMLAttributes, CSSProperties, JSX } from "react";
 import type { ServerCatalogItem } from "@lapis/contracts";
+import type { AppUpdateStatus } from "../../shared/update-types";
 import { IdleAnimation, SkinViewer } from "skinview3d";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -30,20 +31,6 @@ type LaunchSettings = {
   maxMemoryMb: number;
   fullscreen: boolean;
 };
-type AppUpdateStatus = {
-  currentVersion: string;
-  phase:
-    | "disabled"
-    | "idle"
-    | "checking"
-    | "available"
-    | "downloading"
-    | "downloaded"
-    | "not-available"
-    | "error";
-  version?: string;
-  progress?: number;
-};
 const DEFAULT_PLAYER_SKIN: PlayerSkin = {
   textureUrl:
     "https://textures.minecraft.net/texture/6d3b06c38504ffc0229b9492147c69fcf59fd2ed7885f78502152f77b4d50de1",
@@ -54,11 +41,24 @@ type ConfirmAction =
   | { kind: "stop" }
   | { kind: "logout" };
 
+function rendererAssetUrl(path: string): string {
+  return new URL(path, document.baseURI).toString();
+}
+
 function VideoBackdrop(): JSX.Element {
   return (
     <div className="video-backdrop" aria-hidden="true">
-      <video autoPlay muted loop playsInline poster="/video/LapisIcon.jpg">
-        <source src="/video/LapisVideo.mp4" type="video/mp4" />
+      <video
+        autoPlay
+        muted
+        loop
+        playsInline
+        poster={rendererAssetUrl("./video/LapisIcon.jpg")}
+      >
+        <source
+          src={rendererAssetUrl("./video/LapisVideo.mp4")}
+          type="video/mp4"
+        />
       </video>
       <div className="video-shade" />
     </div>
@@ -153,7 +153,7 @@ function ServerActionIcon({
 function BrandLockup({ className = "" }: { className?: string }): JSX.Element {
   return (
     <div className={`brand-lockup ${className}`.trim()}>
-      <img src="/logo.png" alt="" />
+      <img src={rendererAssetUrl("./logo.png")} alt="" />
       <div className="brand-title">
         <h1 className="lapis-wordmark">LAPIS</h1>
         <span>LAUNCHER</span>
@@ -366,6 +366,151 @@ function ConfirmDialog({
   );
 }
 
+function formatDownloadSize(bytes: number | undefined): string | null {
+  if (!bytes || bytes < 1) return null;
+  const megabytes = bytes / (1024 * 1024);
+  return megabytes >= 100
+    ? `${Math.round(megabytes)} МБ`
+    : `${megabytes.toFixed(1)} МБ`;
+}
+
+function UpdateProgress({ progress }: { progress: number }): JSX.Element {
+  const normalized = Math.max(0, Math.min(100, progress));
+  return (
+    <div
+      className="launcher-update-progress"
+      role="progressbar"
+      aria-label="Загрузка обновления"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={normalized}
+    >
+      <span style={{ width: `${normalized}%` }} />
+    </div>
+  );
+}
+
+function UpdateDialog({
+  status,
+  onDownload,
+  onInstall,
+  onRetry,
+  onClose,
+}: {
+  status: AppUpdateStatus;
+  onDownload: () => void;
+  onInstall: () => void;
+  onRetry: () => void;
+  onClose: () => void;
+}): JSX.Element {
+  const downloading = status.phase === "downloading";
+  const downloaded = status.phase === "downloaded";
+  const failed = status.phase === "error";
+  const size = formatDownloadSize(status.downloadSize);
+  return (
+    <Modal
+      title={downloaded ? "Обновление готово" : "Обновление Lapis Launcher"}
+      onClose={onClose}
+      footer={(close) => (
+        <>
+          <button
+            className="modal-secondary"
+            type="button"
+            onClick={() => close()}
+          >
+            Позже
+          </button>
+          {status.phase === "available" && (
+            <button
+              className="modal-confirm"
+              type="button"
+              onClick={onDownload}
+            >
+              Обновить
+            </button>
+          )}
+          {downloaded && (
+            <button className="modal-confirm" type="button" onClick={onInstall}>
+              Перезапустить
+            </button>
+          )}
+          {failed && (
+            <button className="modal-confirm" type="button" onClick={onRetry}>
+              Повторить
+            </button>
+          )}
+        </>
+      )}
+    >
+      <div className="launcher-update-dialog" aria-live="polite">
+        {status.version && (
+          <div className="launcher-update-version">
+            <span>{status.currentVersion}</span>
+            <b>→</b>
+            <strong>{status.version}</strong>
+          </div>
+        )}
+        {status.phase === "available" && (
+          <p>
+            {status.differential
+              ? "Будут загружены только изменения"
+              : "Будет загружена новая версия"}
+            {size ? ` · ${size}` : ""}.
+          </p>
+        )}
+        {downloading && (
+          <>
+            <p>Загрузка продолжится, даже если закрыть это окно.</p>
+            <UpdateProgress progress={status.progress ?? 0} />
+          </>
+        )}
+        {downloaded && (
+          <p>Лаунчер закроется, установит обновление и запустится снова.</p>
+        )}
+        {failed && (
+          <p>{status.error?.message ?? "Не удалось подготовить обновление."}</p>
+        )}
+        {status.releaseNotes && status.phase === "available" && (
+          <div className="launcher-update-notes">{status.releaseNotes}</div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function StartupUpdateGate({
+  status,
+}: {
+  status: AppUpdateStatus;
+}): JSX.Element | null {
+  const visible =
+    status.startup &&
+    (status.phase === "checking" ||
+      status.phase === "available" ||
+      status.phase === "downloading" ||
+      status.phase === "downloaded" ||
+      status.phase === "installing");
+  if (!visible) return null;
+  const title =
+    status.phase === "checking"
+      ? "Проверка обновлений"
+      : status.phase === "installing" || status.phase === "downloaded"
+        ? "Установка обновления"
+        : "Обновление лаунчера";
+  return (
+    <div className="startup-update-gate" role="status" aria-live="polite">
+      <div className="startup-update-card">
+        <BrandLockup />
+        <Spinner />
+        <p>{title}</p>
+        {(status.phase === "downloading" || status.phase === "available") && (
+          <UpdateProgress progress={status.progress ?? 0} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LaunchSettingsDialog({
   server,
   settings,
@@ -401,12 +546,21 @@ function LaunchSettingsDialog({
       onClose={onClose}
       footer={(close) =>
         loading || !settings ? (
-          <button className="modal-secondary" type="button" onClick={() => close()}>
+          <button
+            className="modal-secondary"
+            type="button"
+            onClick={() => close()}
+          >
             Закрыть
           </button>
         ) : (
           <>
-            <button className="modal-secondary" type="button" disabled={saving} onClick={() => close()}>
+            <button
+              className="modal-secondary"
+              type="button"
+              disabled={saving}
+              onClick={() => close()}
+            >
               Отмена
             </button>
             <button
@@ -436,7 +590,9 @@ function LaunchSettingsDialog({
             max={settings.maxMemoryMb}
             step="512"
             value={memoryMb}
-            style={{ "--memory-progress": `${memoryProgress}%` } as CSSProperties}
+            style={
+              { "--memory-progress": `${memoryProgress}%` } as CSSProperties
+            }
             onChange={(event) => setMemoryMb(Number(event.target.value))}
           />
           <label className="fullscreen-setting">
@@ -655,7 +811,7 @@ function Dashboard({
   onDelete,
   onSettings,
   updateStatus,
-  onUpdateAction,
+  onOpenUpdate,
 }: {
   session: Session;
   servers: ServerCatalogItem[];
@@ -675,7 +831,7 @@ function Dashboard({
   onDelete: (server: ServerCatalogItem) => void;
   onSettings: (server: ServerCatalogItem) => void;
   updateStatus: AppUpdateStatus;
-  onUpdateAction: () => void;
+  onOpenUpdate: () => void;
 }): JSX.Element {
   const [menuServerId, setMenuServerId] = useState<string | null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
@@ -683,18 +839,34 @@ function Dashboard({
     if (!menuServerId) return;
     const closeRadius = 48;
     const closeOnOutsidePointer = (event: PointerEvent): void => {
-      if (!menuAreaRef.current?.contains(event.target as Node)) setMenuServerId(null);
+      if (!menuAreaRef.current?.contains(event.target as Node))
+        setMenuServerId(null);
     };
     const closeWhenCursorIsFar = (event: PointerEvent): void => {
       const area = menuAreaRef.current;
       if (!area) return;
       const triggerRect = area.getBoundingClientRect();
-      const menuRect = area.querySelector<HTMLElement>(".server-menu")?.getBoundingClientRect();
-      const left = Math.min(triggerRect.left, menuRect?.left ?? triggerRect.left) - closeRadius;
-      const right = Math.max(triggerRect.right, menuRect?.right ?? triggerRect.right) + closeRadius;
-      const top = Math.min(triggerRect.top, menuRect?.top ?? triggerRect.top) - closeRadius;
-      const bottom = Math.max(triggerRect.bottom, menuRect?.bottom ?? triggerRect.bottom) + closeRadius;
-      if (event.clientX < left || event.clientX > right || event.clientY < top || event.clientY > bottom)
+      const menuRect = area
+        .querySelector<HTMLElement>(".server-menu")
+        ?.getBoundingClientRect();
+      const left =
+        Math.min(triggerRect.left, menuRect?.left ?? triggerRect.left) -
+        closeRadius;
+      const right =
+        Math.max(triggerRect.right, menuRect?.right ?? triggerRect.right) +
+        closeRadius;
+      const top =
+        Math.min(triggerRect.top, menuRect?.top ?? triggerRect.top) -
+        closeRadius;
+      const bottom =
+        Math.max(triggerRect.bottom, menuRect?.bottom ?? triggerRect.bottom) +
+        closeRadius;
+      if (
+        event.clientX < left ||
+        event.clientX > right ||
+        event.clientY < top ||
+        event.clientY > bottom
+      )
         setMenuServerId(null);
     };
     window.addEventListener("pointerdown", closeOnOutsidePointer);
@@ -716,11 +888,14 @@ function Dashboard({
       ? "Доступно обновление"
       : updateStatus.phase === "downloading"
         ? `Скачивание ${updateStatus.progress ?? 0}%`
-        : "Перезапустить и обновить";
+        : updateStatus.phase === "error"
+          ? "Повторить обновление"
+          : "Обновление готово";
   const updateActionVisible =
     updateStatus.phase === "available" ||
     updateStatus.phase === "downloading" ||
-    updateStatus.phase === "downloaded";
+    updateStatus.phase === "downloaded" ||
+    (updateStatus.phase === "error" && Boolean(updateStatus.version));
   return (
     <main className={`shell dashboard ${loggingOut ? "is-leaving" : ""}`}>
       <aside className="profile">
@@ -742,8 +917,7 @@ function Dashboard({
             <button
               className={`update-action ${updateStatus.phase}`}
               type="button"
-              disabled={updateStatus.phase === "downloading"}
-              onClick={onUpdateAction}
+              onClick={onOpenUpdate}
             >
               {updateLabel}
             </button>
@@ -819,9 +993,9 @@ function Dashboard({
                       <button
                         type="button"
                         role="menuitem"
-                      disabled={disabled || running}
-                      onClick={() => runMenuAction(onDelete, server)}
-                    >
+                        disabled={disabled || running}
+                        onClick={() => runMenuAction(onDelete, server)}
+                      >
                         <FontAwesomeIcon icon={faTrash} aria-hidden="true" />
                         Удалить
                       </button>
@@ -918,8 +1092,10 @@ export function App(): JSX.Element {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
     currentVersion: "",
-    phase: "disabled",
+    phase: "checking",
+    startup: true,
   });
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const showNotice = (message: string): void =>
     setNotice({ id: Date.now(), message });
   useEffect(() => {
@@ -1125,16 +1301,21 @@ export function App(): JSX.Element {
     setSettingsSaving(false);
     setSettingsServer(null);
   }
-  async function runUpdateAction(): Promise<void> {
-    if (updateStatus.phase === "available") {
-      const result = await window.lapis.updates.download();
-      if (result.ok) setUpdateStatus(result.data);
-      return;
-    }
-    if (updateStatus.phase === "downloaded") {
-      const result = await window.lapis.updates.install();
-      if (!result.ok) showNotice(result.error.message);
-    }
+  async function downloadLauncherUpdate(): Promise<void> {
+    const result = await window.lapis.updates.download();
+    if (result.ok) setUpdateStatus(result.data);
+    else showNotice(result.error.message);
+  }
+  async function installLauncherUpdate(): Promise<void> {
+    const result = await window.lapis.updates.install();
+    if (!result.ok) showNotice(result.error.message);
+  }
+  async function retryLauncherUpdate(): Promise<void> {
+    const result = updateStatus.version
+      ? await window.lapis.updates.download()
+      : await window.lapis.updates.check();
+    if (result.ok) setUpdateStatus(result.data);
+    else showNotice(result.error.message);
   }
   async function uploadSkin(): Promise<void> {
     if (!session || skinUploading) return;
@@ -1202,7 +1383,7 @@ export function App(): JSX.Element {
         }
         onSettings={(server) => void openBuildSettings(server)}
         updateStatus={updateStatus}
-        onUpdateAction={() => void runUpdateAction()}
+        onOpenUpdate={() => setUpdateDialogOpen(true)}
       />
     ) : (
       <AuthScreen
@@ -1262,6 +1443,16 @@ export function App(): JSX.Element {
           onConfirm={() => void confirmAction()}
         />
       )}
+      {updateDialogOpen && !updateStatus.startup && (
+        <UpdateDialog
+          status={updateStatus}
+          onClose={() => setUpdateDialogOpen(false)}
+          onDownload={() => void downloadLauncherUpdate()}
+          onInstall={() => void installLauncherUpdate()}
+          onRetry={() => void retryLauncherUpdate()}
+        />
+      )}
+      <StartupUpdateGate status={updateStatus} />
     </div>
   );
 }

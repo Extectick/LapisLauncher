@@ -1,3 +1,5 @@
 {
-  "url": "https://lapis-mc.ru/updates"
+  "url": "https://lapis-mc.ru/updates",
+  "channel": "stable",
+  "checkIntervalMinutes": 30
 }

@@ -1,0 +1,270 @@
+name: Launcher release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "launcher-v*"
+
+concurrency:
+  group: launcher-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+jobs:
+  package:
+    name: Build signed Windows release
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.32.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore pinned Velopack CLI
+        run: dotnet tool restore
+
+      - name: Read and verify launcher version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/launcher/package.json | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Launcher version must use MAJOR.MINOR.PATCH."
+          }
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "launcher-v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match launcher version $version."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Restore previous release for delta generation
+        if: github.ref_type == 'tag'
+        id: previous
+        shell: pwsh
+        run: |
+          $outputDirectory = "apps/launcher/release/velopack"
+          New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+          $release = gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName | ConvertFrom-Json | Select-Object -First 1
+          if ($release) {
+            gh release download $release.tagName --pattern "*-full.nupkg" --dir $outputDirectory
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to restore the previous full package."
+            }
+            "tag=$($release.tagName)" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $notesPath = Join-Path $env:RUNNER_TEMP "launcher-release-notes.md"
+          $previousTag = "${{ steps.previous.outputs.tag }}"
+          if ($previousTag) {
+            $notes = git log "$previousTag..HEAD" --pretty=format:"- %s"
+          } else {
+            $notes = git log -20 --pretty=format:"- %s"
+          }
+          if (-not $notes) {
+            $notes = "Lapis Launcher ${{ steps.version.outputs.version }}"
+          }
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8NoBOM
+          "VELOPACK_RELEASE_NOTES=$notesPath" >> $env:GITHUB_ENV
+
+      - name: Prepare and trust signing certificate
+        id: certificate
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WINDOWS_CODE_SIGNING_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_PFX_PASSWORD }}
+          EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_CODE_SIGNING_THUMBPRINT }}
+        run: |
+          if (
+            [string]::IsNullOrWhiteSpace($env:PFX_BASE64) -or
+            [string]::IsNullOrWhiteSpace($env:PFX_PASSWORD) -or
+            [string]::IsNullOrWhiteSpace($env:EXPECTED_THUMBPRINT)
+          ) {
+            throw "Windows Code Signing secrets are incomplete."
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "lapis-code-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:PFX_BASE64))
+          $password = ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if ($certificate.Thumbprint -ne $env:EXPECTED_THUMBPRINT) {
+            throw "Signing certificate thumbprint does not match the protected value."
+          }
+          $publicPath = Join-Path $env:RUNNER_TEMP "lapis-code-signing.cer"
+          Export-Certificate -Cert $certificate -FilePath $publicPath -Force | Out-Null
+          Import-Certificate -FilePath $publicPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+          Import-Certificate -FilePath $publicPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          "LAPIS_SIGNING_CERTIFICATE=$certificatePath" >> $env:GITHUB_ENV
+
+      - name: Typecheck and test
+        run: |
+          pnpm typecheck
+          pnpm --filter @lapis/launcher build
+
+      - name: Build signed Velopack release
+        shell: pwsh
+        env:
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_PFX_PASSWORD }}
+        run: |
+          $env:VELOPACK_SIGN_PARAMS = "/f `"$env:LAPIS_SIGNING_CERTIFICATE`" /p `"$env:PFX_PASSWORD`" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256"
+          pnpm package:win:release
+
+      - name: Verify release and signer
+        shell: pwsh
+        env:
+          EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_CODE_SIGNING_THUMBPRINT }}
+        run: |
+          $releaseDirectory = "apps/launcher/release/velopack"
+          $setup = Get-Item "$releaseDirectory/LapisLauncher-stable-Setup.exe"
+          $signature = Get-AuthenticodeSignature -LiteralPath $setup.FullName
+          if ($signature.Status -ne "Valid") {
+            throw "Invalid installer signature: $($signature.Status)"
+          }
+          if ($signature.SignerCertificate.Thumbprint -ne $env:EXPECTED_THUMBPRINT) {
+            throw "Unexpected installer signer."
+          }
+          $feed = Get-Content "$releaseDirectory/releases.stable.json" -Raw | ConvertFrom-Json
+          $currentVersion = "${{ steps.version.outputs.version }}"
+          $currentAssets = @($feed.Assets | Where-Object Version -eq $currentVersion)
+          if (-not ($currentAssets | Where-Object Type -eq "Full")) {
+            throw "Velopack feed does not contain the current full package."
+          }
+          $packages = Get-ChildItem $releaseDirectory -File -Filter "LapisLauncher-$currentVersion-stable-*.nupkg"
+          if (-not $packages) {
+            throw "Current release packages are missing."
+          }
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: LapisLauncher-${{ steps.version.outputs.version }}-Velopack
+          path: |
+            apps/launcher/release/velopack/LapisLauncher-${{ steps.version.outputs.version }}-stable-*.nupkg
+            apps/launcher/release/velopack/LapisLauncher-stable-Setup.exe
+            apps/launcher/release/velopack/releases.stable.json
+            apps/launcher/release/velopack/assets.stable.json
+            apps/launcher/release/velopack/RELEASES-stable
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Attest release packages
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            apps/launcher/release/velopack/LapisLauncher-${{ steps.version.outputs.version }}-stable-*.nupkg
+            apps/launcher/release/velopack/LapisLauncher-stable-Setup.exe
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = "${{ steps.version.outputs.version }}"
+          $releaseDirectory = "apps/launcher/release/velopack"
+          $assets = @(
+            Get-ChildItem $releaseDirectory -File |
+              Where-Object {
+                $_.Name -like "LapisLauncher-$version-stable-*.nupkg" -or
+                $_.Name -eq "LapisLauncher-stable-Setup.exe" -or
+                $_.Name -in @("releases.stable.json", "assets.stable.json", "RELEASES-stable")
+              } |
+              ForEach-Object FullName
+          )
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag @assets --verify-tag --title "Lapis Launcher $version" --notes-file $env:VELOPACK_RELEASE_NOTES
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release publication failed."
+          }
+
+  deploy:
+    name: Publish update feed
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+    permissions:
+      contents: read
+    steps:
+      - name: Download verified release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: LapisLauncher-${{ needs.package.outputs.version }}-Velopack
+          path: release
+
+      - name: Configure pinned SSH connection
+        env:
+          DEPLOY_KEY: ${{ secrets.LAPIS_UPDATE_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.LAPIS_UPDATE_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s' "$DEPLOY_KEY" > "$HOME/.ssh/lapis-updates-deploy"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/lapis-updates-deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Publish packages and metadata atomically
+        env:
+          DEPLOY_HOST: ${{ secrets.LAPIS_UPDATE_SSH_HOST }}
+          DEPLOY_USER: ${{ secrets.LAPIS_UPDATE_SSH_USER }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+          key="$HOME/.ssh/lapis-updates-deploy"
+          remote="$DEPLOY_USER@$DEPLOY_HOST"
+          target="/var/www/lapis-updates"
+          stage="$target/.staging-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$remote" "install -d -m 755 '$stage'"
+          scp -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes release/* "$remote:$stage/"
+          ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$remote" "set -eu; \
+            for file in '$stage'/*.nupkg '$stage'/*-Setup.exe; do [ ! -e \"\$file\" ] || mv -f \"\$file\" '$target/'; done; \
+            for name in assets.stable.json RELEASES-stable; do [ ! -e '$stage/'\"\$name\" ] || mv -f '$stage/'\"\$name\" '$target/'\"\$name\"; done; \
+            test -f '$stage/releases.stable.json'; \
+            mv -f '$stage/releases.stable.json' '$target/releases.stable.json'; \
+            rmdir '$stage'"
+
+      - name: Verify public update feed
+        env:
+          EXPECTED_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          feed="$(curl --fail --silent --show-error --retry 5 --retry-all-errors --max-time 20 https://lapis-mc.ru/updates/releases.stable.json)"
+          printf '%s' "$feed" | jq -e --arg version "$EXPECTED_VERSION" '.Assets | any(.Version == $version and .Type == "Full")'
