@@ -54,10 +54,21 @@ jobs:
       - name: Generate Prisma client
         run: pnpm --filter @lapis/api prisma:generate
 
+      - name: Build contracts
+        run: pnpm --filter @lapis/contracts build
+
+      - name: Build Minecraft core
+        run: pnpm --filter @lapis/minecraft-core build
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Run tests
+        env:
+          DATABASE_URL: postgresql://lapis:lapis@localhost:5433/lapis_test?schema=public
+          LAPIS_ACCESS_TOKEN_SECRET: ci-access-secret-with-at-least-32-characters
+          LAPIS_REFRESH_TOKEN_PEPPER: ci-refresh-pepper-with-at-least-32-characters
+          RUN_DATABASE_TESTS: "1"
         run: pnpm test
 
   package:
