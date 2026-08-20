@@ -249,7 +249,7 @@ jobs:
           test -n "$DEPLOY_KEY"
           test -n "$KNOWN_HOSTS"
           install -d -m 700 "$HOME/.ssh"
-          printf '%s' "$DEPLOY_KEY" > "$HOME/.ssh/lapis-updates-deploy"
+          printf '%s\n' "$DEPLOY_KEY" | tr -d '\r' > "$HOME/.ssh/lapis-updates-deploy"
           printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/lapis-updates-deploy" "$HOME/.ssh/known_hosts"
 
