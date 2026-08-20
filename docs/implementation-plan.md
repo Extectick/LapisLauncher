@@ -13,7 +13,8 @@
 - Refresh-токен никогда не передаётся renderer-процессу Electron: он хранится через Windows `safeStorage`.
 - Восстановление сессии после перезапуска launcher; временная недоступность API не удаляет локальную сессию.
 - e2e-тесты auth API.
-- Production Docker deployment: API за Nginx/HTTPS, изолированный PostgreSQL volume, health checks, runtime migrations и rate limit для auth.
+- Production Docker deployment: API доступен через `https://lapis-mc.ru/api`, работает за HAProxy/Nginx/HTTPS, использует изолированный PostgreSQL volume, health checks, runtime migrations и rate limit для auth.
+- Публичные URL и URL контента формируются из одной production-константы; домены не хранятся в таблице модов. Переход на `api.lapis-mc.ru` потребует только замены конфигурации после публикации DNS и сертификата.
 
 ### Каталог и интерфейс launcher
 
