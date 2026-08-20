@@ -97,7 +97,7 @@ jobs:
           Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8NoBOM
           "VELOPACK_RELEASE_NOTES=$notesPath" >> $env:GITHUB_ENV
 
-      - name: Prepare and trust signing certificate
+      - name: Prepare and validate signing certificate
         id: certificate
         shell: pwsh
         env:
@@ -114,15 +114,15 @@ jobs:
           }
           $certificatePath = Join-Path $env:RUNNER_TEMP "lapis-code-signing.pfx"
           [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:PFX_BASE64))
-          $password = ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force
-          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $certificatePath,
+            $env:PFX_PASSWORD,
+            $flags
+          )
           if ($certificate.Thumbprint -ne $env:EXPECTED_THUMBPRINT) {
             throw "Signing certificate thumbprint does not match the protected value."
           }
-          $publicPath = Join-Path $env:RUNNER_TEMP "lapis-code-signing.cer"
-          Export-Certificate -Cert $certificate -FilePath $publicPath -Force | Out-Null
-          Import-Certificate -FilePath $publicPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-          Import-Certificate -FilePath $publicPath -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
           "LAPIS_SIGNING_CERTIFICATE=$certificatePath" >> $env:GITHUB_ENV
 
       - name: Typecheck and test
@@ -146,11 +146,24 @@ jobs:
           $releaseDirectory = "apps/launcher/release/velopack"
           $setup = Get-Item "$releaseDirectory/LapisLauncher-stable-Setup.exe"
           $signature = Get-AuthenticodeSignature -LiteralPath $setup.FullName
-          if ($signature.Status -ne "Valid") {
+          $allowedStatuses = @("Valid", "NotTrusted", "UnknownError")
+          if ($signature.Status.ToString() -notin $allowedStatuses) {
             throw "Invalid installer signature: $($signature.Status)"
           }
           if ($signature.SignerCertificate.Thumbprint -ne $env:EXPECTED_THUMBPRINT) {
             throw "Unexpected installer signer."
+          }
+          $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
+          try {
+            $chain.ChainPolicy.TrustMode = [Security.Cryptography.X509Certificates.X509ChainTrustMode]::CustomRootTrust
+            $chain.ChainPolicy.CustomTrustStore.Add($signature.SignerCertificate) | Out-Null
+            $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+            if (-not $chain.Build($signature.SignerCertificate)) {
+              $errors = ($chain.ChainStatus.StatusInformation -join "; ").Trim()
+              throw "Installer signer chain validation failed: $errors"
+            }
+          } finally {
+            $chain.Dispose()
           }
           $feed = Get-Content "$releaseDirectory/releases.stable.json" -Raw | ConvertFrom-Json
           $currentVersion = "${{ steps.version.outputs.version }}"
