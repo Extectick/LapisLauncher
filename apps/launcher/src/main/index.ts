@@ -68,7 +68,7 @@ import type { AppUpdateStatus } from "../shared/update-types";
 // a restart without involving the renderer.
 VelopackApp.build().setAutoApplyOnStartup(true).run();
 
-const API_URL = process.env.LAPIS_API_URL ?? "https://api.lapis-mc.ru";
+const API_URL = process.env.LAPIS_API_URL ?? "https://lapis-mc.ru/api";
 const SESSION_FILE = "session.bin";
 const LAUNCH_SETTINGS_FILE = "launch-settings.json";
 const WINDOWS_APP_ID = "ru.lapis.launcher";
@@ -80,6 +80,11 @@ const MANIFEST_PUBLIC_KEY = (
   process.env.LAPIS_MANIFEST_PUBLIC_KEY ?? PRODUCTION_MANIFEST_PUBLIC_KEY
 ).replace(/\\n/g, "\n");
 const execFileAsync = promisify(execFile);
+
+function apiUrl(path: string): string {
+  const baseUrl = `${API_URL.replace(/\/+$/, "")}/`;
+  return new URL(path.replace(/^\/+/, ""), baseUrl).toString();
+}
 
 // Keep the launcher profile next to game instances instead of Electron's roaming default.
 app.setPath("userData", join(homedir(), ".lapis", "launcher"));
@@ -232,7 +237,7 @@ async function requestAuth(
   path: string,
   body: unknown,
 ): Promise<ApiAuthResponse> {
-  const response = await net.fetch(new URL(path, API_URL).toString(), {
+  const response = await net.fetch(apiUrl(path), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -253,9 +258,7 @@ async function requestAuth(
 
 async function requestCatalog(): Promise<ServerCatalogItem[]> {
   try {
-    const response = await net.fetch(
-      new URL("/v1/servers", API_URL).toString(),
-    );
+    const response = await net.fetch(apiUrl("/v1/servers"));
     if (!response.ok) throw new Error("Catalog request failed");
     return (await response.json()) as ServerCatalogItem[];
   } catch {
@@ -266,12 +269,9 @@ async function requestCatalog(): Promise<ServerCatalogItem[]> {
 }
 
 async function requestPlayerSkin(accessToken: string): Promise<PlayerSkin> {
-  const response = await net.fetch(
-    new URL("/v1/profile/skin", API_URL).toString(),
-    {
-      headers: { authorization: `Bearer ${accessToken}` },
-    },
-  );
+  const response = await net.fetch(apiUrl("/v1/profile/skin"), {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
   if (!response.ok)
     throw new ApiError("Не удалось загрузить скин игрока.", response.status);
   return playerSkinSchema.parse(await response.json());
@@ -281,17 +281,14 @@ async function requestSkinUpload(
   accessToken: string,
   pngBase64: string,
 ): Promise<PlayerSkin> {
-  const response = await net.fetch(
-    new URL("/v1/profile/skin", API_URL).toString(),
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ pngBase64 }),
+  const response = await net.fetch(apiUrl("/v1/profile/skin"), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
     },
-  );
+    body: JSON.stringify({ pngBase64 }),
+  });
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const message =
@@ -338,10 +335,7 @@ async function requestInstallManifest(
 ): Promise<GameInstallManifest> {
   try {
     const response = await net.fetch(
-      new URL(
-        `/v1/servers/${encodeURIComponent(serverId)}/install-manifest`,
-        API_URL,
-      ).toString(),
+      apiUrl(`/v1/servers/${encodeURIComponent(serverId)}/install-manifest`),
     );
     if (!response.ok) throw new Error("Install manifest request failed");
     const signed = signedInstallManifestSchema.parse(await response.json());
@@ -366,10 +360,7 @@ async function requestGameLaunchContext(
   accessToken: string,
 ): Promise<GameLaunchContext> {
   const response = await net.fetch(
-    new URL(
-      `/v1/servers/${encodeURIComponent(serverId)}/game-launch-context`,
-      API_URL,
-    ).toString(),
+    apiUrl(`/v1/servers/${encodeURIComponent(serverId)}/game-launch-context`),
     {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },

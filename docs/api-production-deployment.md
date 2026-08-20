@@ -1,6 +1,6 @@
 # Production API
 
-Production API runs in Docker on the VDS and is exposed only through Nginx at `https://api.lapis-mc.ru`. PostgreSQL has no published host port and stores data in the named volume `lapis-api_lapis_postgres_data`.
+Production API runs in Docker on the VDS and is temporarily exposed through Nginx at `https://lapis-mc.ru/api`. PostgreSQL has no published host port and stores data in the named volume `lapis-api_lapis_postgres_data`.
 
 ## Files
 
@@ -30,4 +30,4 @@ nginx -t && systemctl reload nginx
 
 Never run `docker compose down -v` in production. Before a deployment, create a PostgreSQL custom-format dump and retain the previous source/config directory. A code rollback reuses the same named volume; database downgrade is not automatic and must be assessed per migration.
 
-The launcher production default is `https://api.lapis-mc.ru`. `LAPIS_API_URL` remains available only as a development/testing override.
+The launcher production default is temporarily `https://lapis-mc.ru/api`. `LAPIS_API_URL` remains available only as a development/testing override. Once `api.lapis-mc.ru` is published in DNS and has a valid certificate, change only the launcher default and `LAPIS_PUBLIC_API_URL` back to `https://api.lapis-mc.ru`; endpoint paths are joined without dropping a base path.

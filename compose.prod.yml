@@ -32,8 +32,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3000
-      LAPIS_PUBLIC_API_URL: https://api.lapis-mc.ru
+      LAPIS_PUBLIC_API_URL: https://lapis-mc.ru/api
       LAPIS_CONTENT_ROOT: /data/content
+      LAPIS_SERVER_ROOT: /data/server
       LAPIS_SKIN_RESTORER_DIRECTORY: /data/skins
     depends_on:
       postgres:
@@ -42,6 +43,7 @@ services:
       - "127.0.0.1:3000:3000"
     volumes:
       - /var/lib/lapis-api/content:/data/content:ro
+      - /var/lib/lapis-api/server:/data/server:ro
       - /var/lib/lapis-api/skins:/data/skins
     read_only: true
     tmpfs:
@@ -51,7 +53,13 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
