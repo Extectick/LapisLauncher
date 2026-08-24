@@ -24,6 +24,51 @@ export const refreshSchema = z.object({ refreshToken: z.string().min(1) });
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 
+export const permissionKeys = [
+  "admin.access",
+  "servers.read",
+  "servers.write",
+  "mods.read",
+  "mods.write",
+  "mods.archive",
+  "builds.read",
+  "builds.write",
+  "builds.publish",
+  "builds.activate",
+  "deployments.read",
+  "deployments.execute",
+  "audit.read",
+  "roles.read",
+  "roles.manage",
+] as const;
+export const permissionKeySchema = z.enum(permissionKeys);
+export type PermissionKey = z.infer<typeof permissionKeySchema>;
+
+export const authorizationSnapshotSchema = z.object({
+  isSuperAdmin: z.boolean(),
+  roles: z.array(
+    z.object({
+      key: z.string().min(1).max(64),
+      scopeType: z.enum(["GLOBAL", "SERVER"]),
+      scopeId: z.string().min(1).max(32).nullable(),
+    }),
+  ),
+  globalPermissions: z.array(permissionKeySchema),
+  serverPermissions: z.array(
+    z.object({
+      serverId: z.string().min(1).max(32),
+      permissions: z.array(permissionKeySchema),
+    }),
+  ),
+});
+export type AuthorizationSnapshot = z.infer<typeof authorizationSnapshotSchema>;
+
+export const currentUserSchema = z.object({
+  user: z.object({ id: z.string().uuid(), nickname: nicknameSchema }),
+  authorization: authorizationSnapshotSchema,
+});
+export type CurrentUser = z.infer<typeof currentUserSchema>;
+
 export const serverCatalogItemSchema = z.object({
   id: z.string(),
   slug: z.string(),
@@ -44,11 +89,128 @@ export const serverCatalogItemSchema = z.object({
 });
 export type ServerCatalogItem = z.infer<typeof serverCatalogItemSchema>;
 
+export const adminServerSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
+  slug: z.string().min(1).max(64),
+  name: z.string().min(1).max(80),
+  iconUrl: z.string().url(),
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65535),
+  visible: z.boolean(),
+  maintenance: z.boolean(),
+  status: z.enum(["unknown", "online", "offline"]),
+  onlinePlayers: z.number().int().nonnegative().nullable(),
+  maxPlayers: z.number().int().positive().nullable(),
+  updatedAt: z.string().datetime(),
+  activeBuild: z.object({
+    id: z.string().min(1).max(64),
+    name: z.string().min(1).max(80),
+    minecraftVersion: z.string().min(1).max(32),
+    loader: z.literal("fabric"),
+    loaderVersion: z.string().min(1).max(32),
+    modCount: z.number().int().nonnegative(),
+  }),
+});
+export type AdminServer = z.infer<typeof adminServerSchema>;
+
+const serverIdSchema = z
+  .string()
+  .regex(
+    /^[a-z0-9][a-z0-9_-]{0,31}$/,
+    "ID: до 32 строчных латинских символов, цифр, - или _.",
+  );
+const serverHostSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine(
+    (value) => !/[\s/\\]/.test(value),
+    "Укажите адрес без протокола и пути.",
+  );
+
+export const adminServerCreateSchema = z.object({
+  id: serverIdSchema,
+  name: z.string().trim().min(1).max(80),
+  host: serverHostSchema,
+  port: z.number().int().min(1).max(65535),
+  visible: z.boolean(),
+  templateServerId: serverIdSchema.optional(),
+});
+export type AdminServerCreateInput = z.infer<typeof adminServerCreateSchema>;
+
+export const adminServerUpdateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    host: serverHostSchema.optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    visible: z.boolean().optional(),
+  })
+  .refine(
+    (value) => Object.keys(value).length > 0,
+    "Нет изменений для сохранения.",
+  );
+export type AdminServerUpdateInput = z.infer<typeof adminServerUpdateSchema>;
+
+export const adminClientModSchema = z.object({
+  id: z.string().uuid(),
+  fileName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,179}\.jar$/i),
+  sha1: z.string().regex(/^[a-f0-9]{40}$/i),
+  size: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(128 * 1024 * 1024),
+  enabled: z.boolean(),
+  uploadedAt: z.string().datetime(),
+  compatibility: z.object({
+    status: z.enum(["compatible", "incompatible", "unknown"]),
+    reason: z.string().min(1).max(240),
+    modId: z.string().max(128).nullable(),
+    modVersion: z.string().max(128).nullable(),
+    environment: z.enum(["client", "server", "universal", "unknown"]),
+    minecraftRequirement: z.string().max(240).nullable(),
+    loaderRequirement: z.string().max(240).nullable(),
+  }),
+});
+export type AdminClientMod = z.infer<typeof adminClientModSchema>;
+
+export const adminClientModUpdateSchema = z.object({ enabled: z.boolean() });
+export type AdminClientModUpdateInput = z.infer<
+  typeof adminClientModUpdateSchema
+>;
+
+export const adminClientModDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(100),
+});
+export type AdminClientModDeleteInput = z.infer<
+  typeof adminClientModDeleteSchema
+>;
+
+export const adminClientModDeleteResultSchema = z.object({
+  deletedIds: z.array(z.string().uuid()).min(1).max(100),
+});
+export type AdminClientModDeleteResult = z.infer<
+  typeof adminClientModDeleteResultSchema
+>;
+
+export const serverModSchema = z.object({
+  fileName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,179}\.jar$/i),
+  required: z.boolean(),
+});
+export type ServerMod = z.infer<typeof serverModSchema>;
+
 export const playerSkinSchema = z.object({
   textureUrl: z.string().url(),
   model: z.enum(["default", "slim"]),
 });
 export type PlayerSkin = z.infer<typeof playerSkinSchema>;
+
+export const serverPlayerSchema = z.object({
+  nickname: nicknameSchema,
+  skin: playerSkinSchema,
+});
+export type ServerPlayer = z.infer<typeof serverPlayerSchema>;
 
 export const skinUploadSchema = z.object({
   pngBase64: z.string().min(1).max(28_000),
@@ -62,9 +224,15 @@ export const gameInstallManifestSchema = z.object({
   loaderVersion: z.string(),
   mods: z.array(
     z.object({
-      fileName: z.string(),
+      fileName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,179}\.jar$/i),
       url: z.string().url(),
       sha1: z.string().regex(/^[a-f0-9]{40}$/i),
+      size: z
+        .number()
+        .int()
+        .nonnegative()
+        .max(1024 * 1024 * 1024)
+        .default(0),
       required: z.boolean(),
     }),
   ),
@@ -103,6 +271,9 @@ export type ConsumedGameTicket = { userId: string; nickname: string };
 export function canonicalInstallManifest(
   manifest: GameInstallManifest,
 ): string {
+  // Manifest v1 intentionally keeps size outside the signed canonical payload:
+  // 0.1.7 clients must be able to verify manifests produced by the new API.
+  // SHA-1 remains signed and is still the source of truth for file integrity.
   return JSON.stringify({
     id: manifest.id,
     minecraftVersion: manifest.minecraftVersion,

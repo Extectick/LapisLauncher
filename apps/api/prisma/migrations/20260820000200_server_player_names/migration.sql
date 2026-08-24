@@ -1,0 +1,2 @@
+ALTER TABLE "servers"
+ADD COLUMN "online_player_names" VARCHAR(16)[] NOT NULL DEFAULT ARRAY[]::VARCHAR(16)[];

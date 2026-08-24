@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
+import { APP_GUARD } from "@nestjs/core";
 import { AuthController } from "./auth/auth.controller";
 import { AuthService } from "./auth/auth.service";
 import { PrismaService } from "./prisma.service";
@@ -12,6 +13,11 @@ import { ContentController } from "./servers/content.controller";
 import { ProfileController } from "./profile/profile.controller";
 import { SkinService } from "./profile/skin.service";
 import { HealthController } from "./health.controller";
+import { AccessTokenGuard } from "./auth/access-token.guard";
+import { AuthorizationService } from "./auth/authorization.service";
+import { MeController } from "./auth/me.controller";
+import { PermissionsGuard } from "./auth/permissions.guard";
+import { AdminServersController } from "./admin/admin-servers.controller";
 
 @Module({
   imports: [
@@ -23,6 +29,8 @@ import { HealthController } from "./health.controller";
   controllers: [
     HealthController,
     AuthController,
+    MeController,
+    AdminServersController,
     ServersController,
     GameTicketsController,
     ContentController,
@@ -35,6 +43,9 @@ import { HealthController } from "./health.controller";
     ManifestSigningService,
     GameTicketsService,
     SkinService,
+    AuthorizationService,
+    { provide: APP_GUARD, useClass: AccessTokenGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
   ],
 })
 export class AppModule {}

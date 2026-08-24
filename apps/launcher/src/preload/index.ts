@@ -1,11 +1,17 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { AppUpdateStatus } from "../shared/update-types";
+import type {
+  AdminClientMod,
+  AdminClientModDeleteInput,
+  AdminClientModDeleteResult,
+  AdminServer,
+  AdminServerCreateInput,
+  AdminServerUpdateInput,
+  CurrentUser,
+} from "@lapis/contracts";
 
 type AuthInput = { nickname: string; password: string };
-type AuthResult = {
-  user: { id: string; nickname: string };
-  accessToken: string;
-};
+type AuthResult = CurrentUser;
 type ServerCatalogItem = {
   id: string;
   slug: string;
@@ -35,6 +41,24 @@ type IpcResult<T> =
     };
 type RunningGame = { pid: number; serverId: string; nickname: string } | null;
 type PlayerSkin = { textureUrl: string; model: "default" | "slim" };
+type ServerMod = { fileName: string; required: boolean };
+type ServerPlayer = { nickname: string; skin: PlayerSkin };
+type InstallProgress = {
+  serverId: string;
+  progress: number;
+  phase:
+    | "preparing"
+    | "java"
+    | "minecraft"
+    | "libraries"
+    | "assets"
+    | "fabric"
+    | "mods"
+    | "complete";
+  completed?: number;
+  total?: number;
+  fileName?: string;
+};
 type LaunchSettings = {
   memoryMb: number;
   recommendedMemoryMb: number;
@@ -49,17 +73,52 @@ contextBridge.exposeInMainWorld("lapis", {
       ipcRenderer.invoke("auth:login", input),
     restore: (): Promise<IpcResult<AuthResult | null>> =>
       ipcRenderer.invoke("auth:restore"),
+    me: (): Promise<IpcResult<AuthResult>> => ipcRenderer.invoke("auth:me"),
     logout: (): Promise<IpcResult<null>> => ipcRenderer.invoke("auth:logout"),
   },
   catalog: {
     list: (): Promise<IpcResult<ServerCatalogItem[]>> =>
       ipcRenderer.invoke("catalog:list"),
+    mods: (serverId: string): Promise<IpcResult<ServerMod[]>> =>
+      ipcRenderer.invoke("catalog:mods", serverId),
+    players: (serverId: string): Promise<IpcResult<ServerPlayer[]>> =>
+      ipcRenderer.invoke("catalog:players", serverId),
   },
   profile: {
-    skin: (accessToken: string): Promise<IpcResult<PlayerSkin>> =>
-      ipcRenderer.invoke("profile:skin", accessToken),
-    uploadSkin: (accessToken: string): Promise<IpcResult<PlayerSkin | null>> =>
-      ipcRenderer.invoke("profile:upload-skin", accessToken),
+    skin: (): Promise<IpcResult<PlayerSkin>> =>
+      ipcRenderer.invoke("profile:skin"),
+    uploadSkin: (): Promise<IpcResult<PlayerSkin | null>> =>
+      ipcRenderer.invoke("profile:upload-skin"),
+  },
+  admin: {
+    servers: (): Promise<IpcResult<AdminServer[]>> =>
+      ipcRenderer.invoke("admin:servers"),
+    createServer: (
+      input: AdminServerCreateInput,
+    ): Promise<IpcResult<AdminServer>> =>
+      ipcRenderer.invoke("admin:create-server", input),
+    updateServer: (
+      serverId: string,
+      input: AdminServerUpdateInput,
+    ): Promise<IpcResult<AdminServer>> =>
+      ipcRenderer.invoke("admin:update-server", serverId, input),
+    clientMods: (serverId: string): Promise<IpcResult<AdminClientMod[]>> =>
+      ipcRenderer.invoke("admin:client-mods", serverId),
+    toggleClientMod: (
+      serverId: string,
+      modId: string,
+      enabled: boolean,
+    ): Promise<IpcResult<AdminClientMod>> =>
+      ipcRenderer.invoke("admin:toggle-client-mod", serverId, modId, enabled),
+    uploadClientMod: (
+      serverId: string,
+    ): Promise<IpcResult<AdminClientMod | null>> =>
+      ipcRenderer.invoke("admin:upload-client-mod", serverId),
+    deleteClientMods: (
+      serverId: string,
+      input: AdminClientModDeleteInput,
+    ): Promise<IpcResult<AdminClientModDeleteResult>> =>
+      ipcRenderer.invoke("admin:delete-client-mods", serverId, input),
   },
   updates: {
     status: (): Promise<IpcResult<AppUpdateStatus>> =>
@@ -115,26 +174,19 @@ contextBridge.exposeInMainWorld("lapis", {
       ipcRenderer.invoke("runtime:stop-game"),
     launchGame: (
       serverId: string,
-      nickname: string,
-      accessToken: string,
     ): Promise<IpcResult<Exclude<RunningGame, null>>> =>
-      ipcRenderer.invoke(
-        "runtime:launch-game",
-        serverId,
-        nickname,
-        accessToken,
-      ),
+      ipcRenderer.invoke("runtime:launch-game", serverId),
     onGameExit: (callback: () => void): (() => void) => {
       const listener = (): void => callback();
       ipcRenderer.on("runtime:game-exited", listener);
       return () => ipcRenderer.removeListener("runtime:game-exited", listener);
     },
     onInstallProgress: (
-      callback: (progress: { serverId: string; progress: number }) => void,
+      callback: (progress: InstallProgress) => void,
     ): (() => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        progress: { serverId: string; progress: number },
+        progress: InstallProgress,
       ): void => callback(progress);
       ipcRenderer.on("runtime:install-progress", listener);
       return () =>

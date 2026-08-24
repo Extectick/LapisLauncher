@@ -42,7 +42,9 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - /var/lib/lapis-api/content:/data/content:ro
+      # Client-mod uploads are streamed into this dedicated volume. The
+      # container root remains read-only and the server directory stays ro.
+      - /var/lib/lapis-api/content:/data/content
       - /var/lib/lapis-api/server:/data/server:ro
       - /var/lib/lapis-api/skins:/data/skins
     read_only: true

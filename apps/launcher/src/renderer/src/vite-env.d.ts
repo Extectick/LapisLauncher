@@ -1,11 +1,17 @@
 /// <reference types="vite/client" />
 
 import type { AppUpdateStatus } from "../../shared/update-types";
+import type {
+  AdminClientMod,
+  AdminClientModDeleteInput,
+  AdminClientModDeleteResult,
+  AdminServer,
+  AdminServerCreateInput,
+  AdminServerUpdateInput,
+  CurrentUser,
+} from "@lapis/contracts";
 
-type AuthResult = {
-  user: { id: string; nickname: string };
-  accessToken: string;
-};
+type AuthResult = CurrentUser;
 type ServerCatalogItem = {
   id: string;
   slug: string;
@@ -41,6 +47,24 @@ type LaunchSettings = {
   fullscreen: boolean;
 };
 type PlayerSkin = { textureUrl: string; model: "default" | "slim" };
+type ServerMod = { fileName: string; required: boolean };
+type ServerPlayer = { nickname: string; skin: PlayerSkin };
+type InstallProgress = {
+  serverId: string;
+  progress: number;
+  phase:
+    | "preparing"
+    | "java"
+    | "minecraft"
+    | "libraries"
+    | "assets"
+    | "fabric"
+    | "mods"
+    | "complete";
+  completed?: number;
+  total?: number;
+  fileName?: string;
+};
 declare global {
   interface Window {
     lapis: {
@@ -54,12 +78,40 @@ declare global {
           password: string;
         }): Promise<IpcResult<AuthResult>>;
         restore(): Promise<IpcResult<AuthResult | null>>;
+        me(): Promise<IpcResult<AuthResult>>;
         logout(): Promise<IpcResult<null>>;
       };
-      catalog: { list(): Promise<IpcResult<ServerCatalogItem[]>> };
+      catalog: {
+        list(): Promise<IpcResult<ServerCatalogItem[]>>;
+        mods(serverId: string): Promise<IpcResult<ServerMod[]>>;
+        players(serverId: string): Promise<IpcResult<ServerPlayer[]>>;
+      };
       profile: {
-        skin(accessToken: string): Promise<IpcResult<PlayerSkin>>;
-        uploadSkin(accessToken: string): Promise<IpcResult<PlayerSkin | null>>;
+        skin(): Promise<IpcResult<PlayerSkin>>;
+        uploadSkin(): Promise<IpcResult<PlayerSkin | null>>;
+      };
+      admin: {
+        servers(): Promise<IpcResult<AdminServer[]>>;
+        createServer(
+          input: AdminServerCreateInput,
+        ): Promise<IpcResult<AdminServer>>;
+        updateServer(
+          serverId: string,
+          input: AdminServerUpdateInput,
+        ): Promise<IpcResult<AdminServer>>;
+        clientMods(serverId: string): Promise<IpcResult<AdminClientMod[]>>;
+        toggleClientMod(
+          serverId: string,
+          modId: string,
+          enabled: boolean,
+        ): Promise<IpcResult<AdminClientMod>>;
+        uploadClientMod(
+          serverId: string,
+        ): Promise<IpcResult<AdminClientMod | null>>;
+        deleteClientMods(
+          serverId: string,
+          input: AdminClientModDeleteInput,
+        ): Promise<IpcResult<AdminClientModDeleteResult>>;
       };
       updates: {
         status(): Promise<IpcResult<AppUpdateStatus>>;
@@ -93,12 +145,10 @@ declare global {
         stopGame(): Promise<IpcResult<null>>;
         launchGame(
           serverId: string,
-          nickname: string,
-          accessToken: string,
         ): Promise<IpcResult<Exclude<RunningGame, null>>>;
         onGameExit(callback: () => void): () => void;
         onInstallProgress(
-          callback: (progress: { serverId: string; progress: number }) => void,
+          callback: (progress: InstallProgress) => void,
         ): () => void;
       };
     };

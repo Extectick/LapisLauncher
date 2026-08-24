@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, HttpCode, Inject, Post } from '@
 import { ZodError } from 'zod';
 import { loginSchema, refreshSchema, registerSchema } from '@lapis/contracts';
 import { AuthService, AuthResult } from './auth.service';
+import { Public } from './public.decorator';
 
 function parse<T>(schema: { parse(input: unknown): T }, value: unknown): T {
   try {
@@ -15,6 +16,7 @@ function parse<T>(schema: { parse(input: unknown): T }, value: unknown): T {
   }
 }
 
+@Public()
 @Controller('v1/auth')
 export class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}

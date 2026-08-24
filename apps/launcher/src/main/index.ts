@@ -29,17 +29,36 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   canonicalInstallManifest,
+  adminClientModDeleteResultSchema,
+  adminClientModDeleteSchema,
+  adminClientModSchema,
+  adminServerCreateSchema,
+  adminServerSchema,
+  adminServerUpdateSchema,
+  currentUserSchema,
   gameLaunchContextSchema,
   loginSchema,
   nicknameSchema,
   playerSkinSchema,
   registerSchema,
+  serverModSchema,
+  serverPlayerSchema,
 } from "@lapis/contracts";
 import {
   GameInstallManifest,
   GameLaunchContext,
+  AdminClientMod,
+  AdminClientModDeleteInput,
+  AdminClientModDeleteResult,
+  AdminClientModUpdateInput,
+  AdminServer,
+  AdminServerCreateInput,
+  AdminServerUpdateInput,
+  CurrentUser,
   PlayerSkin,
   ServerCatalogItem,
+  ServerMod,
+  ServerPlayer,
   signedInstallManifestSchema,
 } from "@lapis/contracts";
 import { z, ZodError } from "zod";
@@ -51,6 +70,7 @@ import {
   launchMinecraftRuntime,
   minecraftInstanceDirectory,
   removeMinecraftRuntime,
+  type MinecraftInstallProgressEvent,
 } from "@lapis/minecraft-core";
 import {
   checkForUpdates,
@@ -62,13 +82,16 @@ import {
   shutdownUpdater,
 } from "./updater";
 import type { AppUpdateStatus } from "../shared/update-types";
+import { nicknameServerTarget } from "./server-policy";
 
 // Velopack lifecycle hooks must be registered before the rest of the Electron
 // application starts. Pending updates are applied explicitly after the
 // Minecraft install guard has been restored, never before normal startup.
 VelopackApp.build().setAutoApplyOnStartup(false).run();
 
-const API_URL = process.env.LAPIS_API_URL ?? "https://lapis-mc.ru/api";
+const API_URL =
+  process.env.LAPIS_API_URL ??
+  (is.dev ? "http://127.0.0.1:3000" : "https://lapis-mc.ru/api");
 const SESSION_FILE = "session.bin";
 const LAUNCH_SETTINGS_FILE = "launch-settings.json";
 const RUNNING_GAME_FILE = "running-game.json";
@@ -77,8 +100,13 @@ const WINDOW_ICON_PATH = join(__dirname, "../renderer/logo.ico");
 const PRODUCTION_MANIFEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAhN02b2cG2J1WYsRD1jzTHPIYgpkeWAwTgxsdGVnklB4=
 -----END PUBLIC KEY-----`;
+const DEVELOPMENT_MANIFEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAGKwnxT59diFYHRUHn4Fgd0MO7Y/BfHa8P44p5NSXgMw=
+-----END PUBLIC KEY-----`;
 const MANIFEST_PUBLIC_KEY = (
-  process.env.LAPIS_MANIFEST_PUBLIC_KEY ?? PRODUCTION_MANIFEST_PUBLIC_KEY
+  is.dev
+    ? (process.env.LAPIS_MANIFEST_PUBLIC_KEY ?? DEVELOPMENT_MANIFEST_PUBLIC_KEY)
+    : PRODUCTION_MANIFEST_PUBLIC_KEY
 ).replace(/\\n/g, "\n");
 const execFileAsync = promisify(execFile);
 
@@ -87,8 +115,12 @@ function apiUrl(path: string): string {
   return new URL(path.replace(/^\/+/, ""), baseUrl).toString();
 }
 
-// Keep the launcher profile next to game instances instead of Electron's roaming default.
-app.setPath("userData", join(homedir(), ".lapis", "launcher"));
+// Keep development credentials isolated from the installed production launcher.
+// A local API has its own database and must never invalidate a production session.
+app.setPath(
+  "userData",
+  join(homedir(), ".lapis", is.dev ? "launcher-dev" : "launcher"),
+);
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
@@ -98,7 +130,7 @@ type ApiAuthResponse = {
   accessToken: string;
   refreshToken: string;
 };
-type RendererAuthResponse = { user: User; accessToken: string };
+type RendererAuthResponse = CurrentUser;
 type StoredSession = { refreshToken: string; user: User | null };
 type FieldErrors = Partial<Record<"nickname" | "password", string>>;
 type IpcResult<T> =
@@ -131,6 +163,8 @@ type StoredLaunchSettings = Record<
 >;
 
 let runningGame: RunningGame | null = null;
+let currentAccessToken: string | null = null;
+let currentSessionUser: User | null = null;
 let restoreSessionRequest: Promise<
   IpcResult<RendererAuthResponse | null>
 > | null = null;
@@ -146,6 +180,15 @@ class ApiError extends Error {
   ) {
     super(messageForUser);
   }
+}
+
+function apiPayloadMessage(payload: unknown, fallback: string): string {
+  return typeof payload === "object" &&
+    payload !== null &&
+    "message" in payload &&
+    typeof payload.message === "string"
+    ? payload.message
+    : fallback;
 }
 
 function sessionPath(): string {
@@ -276,6 +319,215 @@ async function requestCatalog(): Promise<ServerCatalogItem[]> {
       "Не удалось загрузить каталог серверов. Повторите попытку.",
     );
   }
+}
+
+async function requestCurrentUser(accessToken: string): Promise<CurrentUser> {
+  const response = await net.fetch(apiUrl("/v1/me"), {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      typeof payload === "object" &&
+      payload !== null &&
+      "message" in payload &&
+      typeof payload.message === "string"
+        ? payload.message
+        : "Не удалось проверить права пользователя.";
+    throw new ApiError(message, response.status);
+  }
+  return currentUserSchema.parse(payload);
+}
+
+async function requestAdminServers(
+  accessToken: string,
+): Promise<AdminServer[]> {
+  const response = await net.fetch(apiUrl("/v1/admin/servers"), {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      typeof payload === "object" &&
+      payload !== null &&
+      "message" in payload &&
+      typeof payload.message === "string"
+        ? payload.message
+        : "Не удалось загрузить серверы администратора.";
+    throw new ApiError(message, response.status);
+  }
+  return adminServerSchema.array().parse(payload);
+}
+
+async function requestAdminServerCreate(
+  accessToken: string,
+  input: AdminServerCreateInput,
+): Promise<AdminServer> {
+  const response = await net.fetch(apiUrl("/v1/admin/servers"), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(adminServerCreateSchema.parse(input)),
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new ApiError(
+      apiPayloadMessage(payload, "Не удалось добавить сервер."),
+      response.status,
+    );
+  return adminServerSchema.parse(payload);
+}
+
+async function requestAdminServerUpdate(
+  accessToken: string,
+  serverId: string,
+  input: AdminServerUpdateInput,
+): Promise<AdminServer> {
+  const response = await net.fetch(
+    apiUrl(`/v1/admin/servers/${encodeURIComponent(serverId)}`),
+    {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(adminServerUpdateSchema.parse(input)),
+    },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new ApiError(
+      apiPayloadMessage(payload, "Не удалось сохранить сервер."),
+      response.status,
+    );
+  return adminServerSchema.parse(payload);
+}
+
+async function requestAdminClientMods(
+  accessToken: string,
+  serverId: string,
+): Promise<AdminClientMod[]> {
+  const response = await net.fetch(
+    apiUrl(`/v1/admin/servers/${encodeURIComponent(serverId)}/client-mods`),
+    { headers: { authorization: `Bearer ${accessToken}` } },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new ApiError(
+      apiPayloadMessage(payload, "Не удалось загрузить клиентские моды."),
+      response.status,
+    );
+  return adminClientModSchema.array().parse(payload);
+}
+
+async function requestAdminClientModUpdate(
+  accessToken: string,
+  serverId: string,
+  modId: string,
+  input: AdminClientModUpdateInput,
+): Promise<AdminClientMod> {
+  const response = await net.fetch(
+    apiUrl(
+      `/v1/admin/servers/${encodeURIComponent(serverId)}/client-mods/${encodeURIComponent(modId)}`,
+    ),
+    {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(input),
+    },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new ApiError(
+      apiPayloadMessage(payload, "Не удалось изменить клиентский мод."),
+      response.status,
+    );
+  return adminClientModSchema.parse(payload);
+}
+
+async function requestAdminClientModUpload(
+  accessToken: string,
+  serverId: string,
+  path: string,
+): Promise<AdminClientMod> {
+  const bytes = await readFile(path);
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([bytes], { type: "application/java-archive" }),
+    basename(path),
+  );
+  const response = await net.fetch(
+    apiUrl(`/v1/admin/servers/${encodeURIComponent(serverId)}/client-mods`),
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+      body: form,
+    },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new ApiError(
+      apiPayloadMessage(payload, "Не удалось загрузить клиентский мод."),
+      response.status,
+    );
+  return adminClientModSchema.parse(payload);
+}
+
+async function requestAdminClientModDelete(
+  accessToken: string,
+  serverId: string,
+  input: AdminClientModDeleteInput,
+): Promise<AdminClientModDeleteResult> {
+  const response = await net.fetch(
+    apiUrl(`/v1/admin/servers/${encodeURIComponent(serverId)}/client-mods`),
+    {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(adminClientModDeleteSchema.parse(input)),
+    },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok)
+    throw new ApiError(
+      apiPayloadMessage(payload, "Не удалось удалить клиентские моды."),
+      response.status,
+    );
+  return adminClientModDeleteResultSchema.parse(payload);
+}
+
+async function requestServerCollection<T>(
+  serverId: string,
+  resource: "mods" | "players",
+  schema: z.ZodType<T>,
+): Promise<T> {
+  const response = await net.fetch(
+    apiUrl(
+      `/v1/servers/${encodeURIComponent(serverId)}/${encodeURIComponent(resource)}`,
+    ),
+  );
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    const message =
+      typeof payload === "object" &&
+      payload !== null &&
+      "message" in payload &&
+      typeof payload.message === "string"
+        ? payload.message
+        : resource === "mods"
+          ? "Не удалось загрузить список модов."
+          : "Не удалось загрузить список игроков.";
+    throw new ApiError(message, response.status);
+  }
+  return schema.parse(await response.json());
 }
 
 async function requestPlayerSkin(accessToken: string): Promise<PlayerSkin> {
@@ -450,8 +702,33 @@ async function readStoredSession(): Promise<StoredSession | null> {
   }
 }
 
-function toRendererAuth(response: ApiAuthResponse): RendererAuthResponse {
-  return { user: response.user, accessToken: response.accessToken };
+async function activateSession(
+  response: ApiAuthResponse,
+): Promise<RendererAuthResponse> {
+  currentAccessToken = response.accessToken;
+  currentSessionUser = response.user;
+  let current: CurrentUser;
+  try {
+    current = await requestCurrentUser(response.accessToken);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) throw error;
+    return offlineRendererAuth(response.user);
+  }
+  if (current.user.id !== response.user.id)
+    throw new ApiError("Профиль сессии не совпадает с пользователем.");
+  return current;
+}
+
+function offlineRendererAuth(user: User): RendererAuthResponse {
+  return currentUserSchema.parse({
+    user,
+    authorization: {
+      isSuperAdmin: false,
+      roles: [],
+      globalPermissions: [],
+      serverPermissions: [],
+    },
+  });
 }
 
 function zodFailure(error: ZodError): IpcResult<never> {
@@ -477,7 +754,7 @@ async function performAuth(
   try {
     const response = await requestAuth(path, input);
     await saveRefreshToken(response.refreshToken, response.user);
-    return { ok: true, data: toRendererAuth(response) };
+    return { ok: true, data: await activateSession(response) };
   } catch (error) {
     const message =
       error instanceof ApiError
@@ -501,7 +778,7 @@ async function restoreSession(): Promise<
       join(app.getPath("userData"), "auth-restore.log"),
       `${new Date().toISOString()} session-restored\n`,
     ).catch(() => undefined);
-    return { ok: true, data: toRendererAuth(response) };
+    return { ok: true, data: await activateSession(response) };
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       await rm(sessionPath(), { force: true });
@@ -519,8 +796,11 @@ async function restoreSession(): Promise<
       join(app.getPath("userData"), "auth-restore.log"),
       `${new Date().toISOString()} session-restore-failed: ${error instanceof Error ? error.name : "unknown"}${cause}${error instanceof ApiError && error.status ? `-${error.status}` : ""}\n`,
     ).catch(() => undefined);
-    if (stored.user)
-      return { ok: true, data: { user: stored.user, accessToken: "" } };
+    if (stored.user) {
+      currentAccessToken = null;
+      currentSessionUser = stored.user;
+      return { ok: true, data: offlineRendererAuth(stored.user) };
+    }
     const message =
       error instanceof ApiError
         ? error.messageForUser
@@ -529,20 +809,7 @@ async function restoreSession(): Promise<
   }
 }
 
-async function refreshedLaunchContext(
-  serverId: string,
-  accessToken: string,
-): Promise<GameLaunchContext> {
-  try {
-    if (accessToken.length >= 20)
-      return await requestGameLaunchContext(serverId, accessToken);
-  } catch (error) {
-    if (!(error instanceof ApiError) || error.status !== 401) {
-      throw new ApiError(
-        "Сервер авторизации недоступен. Сессия сохранена — повторите позже.",
-      );
-    }
-  }
+async function refreshAccessToken(): Promise<string> {
   const stored = await readStoredSession();
   if (!stored) throw new ApiError("Сессия не найдена. Войдите снова.");
   try {
@@ -550,7 +817,9 @@ async function refreshedLaunchContext(
       refreshToken: stored.refreshToken,
     });
     await saveRefreshToken(refreshed.refreshToken, refreshed.user);
-    return await requestGameLaunchContext(serverId, refreshed.accessToken);
+    currentAccessToken = refreshed.accessToken;
+    currentSessionUser = refreshed.user;
+    return refreshed.accessToken;
   } catch (error) {
     if (error instanceof ApiError && error.status === 401)
       throw new ApiError("Сессия больше не действительна. Войдите снова.");
@@ -558,6 +827,58 @@ async function refreshedLaunchContext(
       "Сервер авторизации недоступен. Сессия сохранена — повторите позже.",
     );
   }
+}
+
+async function withAccessToken<T>(
+  request: (accessToken: string) => Promise<T>,
+): Promise<T> {
+  if (currentAccessToken) {
+    try {
+      return await request(currentAccessToken);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 401) throw error;
+      currentAccessToken = null;
+    }
+  }
+  return request(await refreshAccessToken());
+}
+
+async function refreshedLaunchContext(
+  serverId: string,
+): Promise<GameLaunchContext> {
+  try {
+    return await withAccessToken((accessToken) =>
+      requestGameLaunchContext(serverId, accessToken),
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401)
+      throw new ApiError("Сессия больше не действительна. Войдите снова.");
+    if (error instanceof ApiError && !error.status) throw error;
+    throw new ApiError(
+      "Сервер авторизации недоступен. Сессия сохранена — повторите позже.",
+    );
+  }
+}
+
+function nicknameLaunchContext(
+  serverId: string,
+  buildId: string,
+): GameLaunchContext | null {
+  const target = nicknameServerTarget(serverId);
+  if (!target) return null;
+  return gameLaunchContextSchema.parse({
+    serverId,
+    host: target.host,
+    port: target.port,
+    buildId,
+    bridgeProtocolVersion: 1,
+    // The existing client bridge expects a one-time opaque value in its local
+    // bootstrap payload. Nickname-mode servers never send the Lapis auth
+    // challenge, so this value stays on the user's computer and is not an API
+    // credential or a server authorization ticket.
+    ticket: randomBytes(32).toString("base64url"),
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+  });
 }
 
 function processIsRunning(pid: number): boolean {
@@ -644,11 +965,15 @@ function startGameProcessMonitor(): void {
   gameProcessMonitor.unref();
 }
 
-function reportInstallProgress(serverId: string, progress: number): void {
+function reportInstallProgress(
+  serverId: string,
+  event: MinecraftInstallProgressEvent,
+): void {
   if (mainWindow && !mainWindow.isDestroyed())
     mainWindow.webContents.send("runtime:install-progress", {
       serverId,
-      progress: Math.max(0, Math.min(100, Math.round(progress))),
+      ...event,
+      progress: Math.max(0, Math.min(100, Math.round(event.progress))),
     });
 }
 
@@ -878,8 +1203,24 @@ app.whenReady().then(async () => {
       }
     }
     await rm(sessionPath(), { force: true });
+    currentAccessToken = null;
+    currentSessionUser = null;
     restoreSessionRequest = null;
     return { ok: true, data: null } satisfies IpcResult<null>;
+  });
+  ipcMain.handle("auth:me", async () => {
+    try {
+      return {
+        ok: true,
+        data: await withAccessToken(requestCurrentUser),
+      } satisfies IpcResult<CurrentUser>;
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.messageForUser
+          : "Не удалось обновить права пользователя.";
+      return { ok: false, error: { message } } satisfies IpcResult<CurrentUser>;
+    }
   });
   ipcMain.handle("catalog:list", async () => {
     try {
@@ -896,13 +1237,53 @@ app.whenReady().then(async () => {
       >;
     }
   });
-  ipcMain.handle("profile:skin", async (_event, accessToken: unknown) => {
+  ipcMain.handle("catalog:mods", async (_event, serverId: unknown) => {
     try {
-      if (typeof accessToken !== "string" || accessToken.length < 20)
-        throw new ApiError("Сессия недоступна.");
+      if (!validServerId(serverId))
+        throw new ApiError("Некорректный запрос списка модов.");
       return {
         ok: true,
-        data: await requestPlayerSkin(accessToken),
+        data: await requestServerCollection(
+          serverId,
+          "mods",
+          serverModSchema.array(),
+        ),
+      } satisfies IpcResult<ServerMod[]>;
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.messageForUser
+          : "Не удалось загрузить список модов.";
+      return { ok: false, error: { message } } satisfies IpcResult<ServerMod[]>;
+    }
+  });
+  ipcMain.handle("catalog:players", async (_event, serverId: unknown) => {
+    try {
+      if (!validServerId(serverId))
+        throw new ApiError("Некорректный запрос списка игроков.");
+      return {
+        ok: true,
+        data: await requestServerCollection(
+          serverId,
+          "players",
+          serverPlayerSchema.array(),
+        ),
+      } satisfies IpcResult<ServerPlayer[]>;
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.messageForUser
+          : "Не удалось загрузить список игроков.";
+      return { ok: false, error: { message } } satisfies IpcResult<
+        ServerPlayer[]
+      >;
+    }
+  });
+  ipcMain.handle("profile:skin", async () => {
+    try {
+      return {
+        ok: true,
+        data: await withAccessToken(requestPlayerSkin),
       } satisfies IpcResult<PlayerSkin>;
     } catch (error) {
       const message =
@@ -912,31 +1293,212 @@ app.whenReady().then(async () => {
       return { ok: false, error: { message } } satisfies IpcResult<PlayerSkin>;
     }
   });
+  ipcMain.handle("profile:upload-skin", async () => {
+    try {
+      const pngBase64 = await selectSkinPng();
+      if (!pngBase64)
+        return {
+          ok: true,
+          data: null,
+        } satisfies IpcResult<PlayerSkin | null>;
+      return {
+        ok: true,
+        data: await withAccessToken((accessToken) =>
+          requestSkinUpload(accessToken, pngBase64),
+        ),
+      } satisfies IpcResult<PlayerSkin | null>;
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.messageForUser
+          : "Не удалось загрузить скин.";
+      return {
+        ok: false,
+        error: { message },
+      } satisfies IpcResult<PlayerSkin | null>;
+    }
+  });
+  ipcMain.handle("admin:servers", async () => {
+    try {
+      return {
+        ok: true,
+        data: await withAccessToken(requestAdminServers),
+      } satisfies IpcResult<AdminServer[]>;
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.messageForUser
+          : "Не удалось загрузить административный список серверов.";
+      return { ok: false, error: { message } } satisfies IpcResult<
+        AdminServer[]
+      >;
+    }
+  });
+  ipcMain.handle("admin:create-server", async (_event, input: unknown) => {
+    try {
+      const parsed = adminServerCreateSchema.parse(input);
+      return {
+        ok: true,
+        data: await withAccessToken((accessToken) =>
+          requestAdminServerCreate(accessToken, parsed),
+        ),
+      } satisfies IpcResult<AdminServer>;
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          message:
+            error instanceof ApiError
+              ? error.messageForUser
+              : error instanceof ZodError
+                ? (error.issues[0]?.message ?? "Проверьте данные сервера.")
+                : "Не удалось добавить сервер.",
+        },
+      } satisfies IpcResult<AdminServer>;
+    }
+  });
   ipcMain.handle(
-    "profile:upload-skin",
-    async (_event, accessToken: unknown) => {
+    "admin:update-server",
+    async (_event, serverId: unknown, input: unknown) => {
       try {
-        if (typeof accessToken !== "string" || accessToken.length < 20)
-          throw new ApiError("Сессия недоступна.");
-        const pngBase64 = await selectSkinPng();
-        if (!pngBase64)
+        if (!validServerId(serverId)) throw new Error("Invalid server id");
+        const parsed = adminServerUpdateSchema.parse(input);
+        return {
+          ok: true,
+          data: await withAccessToken((accessToken) =>
+            requestAdminServerUpdate(accessToken, serverId, parsed),
+          ),
+        } satisfies IpcResult<AdminServer>;
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            message:
+              error instanceof ApiError
+                ? error.messageForUser
+                : error instanceof ZodError
+                  ? (error.issues[0]?.message ?? "Проверьте данные сервера.")
+                  : "Не удалось сохранить сервер.",
+          },
+        } satisfies IpcResult<AdminServer>;
+      }
+    },
+  );
+  ipcMain.handle("admin:client-mods", async (_event, serverId: unknown) => {
+    try {
+      if (!validServerId(serverId)) throw new Error("Invalid server id");
+      return {
+        ok: true,
+        data: await withAccessToken((accessToken) =>
+          requestAdminClientMods(accessToken, serverId),
+        ),
+      } satisfies IpcResult<AdminClientMod[]>;
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          message:
+            error instanceof ApiError
+              ? error.messageForUser
+              : "Не удалось загрузить клиентские моды.",
+        },
+      } satisfies IpcResult<AdminClientMod[]>;
+    }
+  });
+  ipcMain.handle(
+    "admin:toggle-client-mod",
+    async (_event, serverId: unknown, modId: unknown, enabled: unknown) => {
+      try {
+        if (
+          !validServerId(serverId) ||
+          typeof modId !== "string" ||
+          !z.string().uuid().safeParse(modId).success ||
+          typeof enabled !== "boolean"
+        )
+          throw new Error("Invalid client mod input");
+        return {
+          ok: true,
+          data: await withAccessToken((accessToken) =>
+            requestAdminClientModUpdate(accessToken, serverId, modId, {
+              enabled,
+            }),
+          ),
+        } satisfies IpcResult<AdminClientMod>;
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            message:
+              error instanceof ApiError
+                ? error.messageForUser
+                : "Не удалось изменить клиентский мод.",
+          },
+        } satisfies IpcResult<AdminClientMod>;
+      }
+    },
+  );
+  ipcMain.handle(
+    "admin:upload-client-mod",
+    async (_event, serverId: unknown) => {
+      try {
+        if (!validServerId(serverId)) throw new Error("Invalid server id");
+        const selected = await dialog.showOpenDialog({
+          title: "Добавить клиентский мод",
+          properties: ["openFile"],
+          filters: [{ name: "Minecraft mod", extensions: ["jar"] }],
+        });
+        if (selected.canceled || !selected.filePaths[0])
           return {
             ok: true,
             data: null,
-          } satisfies IpcResult<PlayerSkin | null>;
+          } satisfies IpcResult<AdminClientMod | null>;
+        const path = selected.filePaths[0];
+        const file = await stat(path);
+        if (file.size > 128 * 1024 * 1024)
+          throw new ApiError(
+            "Размер клиентского мода не должен превышать 128 МБ.",
+          );
         return {
           ok: true,
-          data: await requestSkinUpload(accessToken, pngBase64),
-        } satisfies IpcResult<PlayerSkin | null>;
+          data: await withAccessToken((accessToken) =>
+            requestAdminClientModUpload(accessToken, serverId, path),
+          ),
+        } satisfies IpcResult<AdminClientMod | null>;
       } catch (error) {
-        const message =
-          error instanceof ApiError
-            ? error.messageForUser
-            : "Не удалось загрузить скин.";
         return {
           ok: false,
-          error: { message },
-        } satisfies IpcResult<PlayerSkin | null>;
+          error: {
+            message:
+              error instanceof ApiError
+                ? error.messageForUser
+                : "Не удалось загрузить клиентский мод.",
+          },
+        } satisfies IpcResult<AdminClientMod | null>;
+      }
+    },
+  );
+  ipcMain.handle(
+    "admin:delete-client-mods",
+    async (_event, serverId: unknown, input: unknown) => {
+      try {
+        if (!validServerId(serverId)) throw new Error("Invalid server id");
+        const parsed = adminClientModDeleteSchema.parse(input);
+        return {
+          ok: true,
+          data: await withAccessToken((accessToken) =>
+            requestAdminClientModDelete(accessToken, serverId, parsed),
+          ),
+        } satisfies IpcResult<AdminClientModDeleteResult>;
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            message:
+              error instanceof ApiError
+                ? error.messageForUser
+                : "Не удалось удалить клиентские моды.",
+          },
+        } satisfies IpcResult<AdminClientModDeleteResult>;
       }
     },
   );
@@ -947,12 +1509,15 @@ app.whenReady().then(async () => {
   ipcMain.handle("runtime:ensure-java", async () => {
     try {
       return { ok: true, data: await ensureJavaRuntime() };
-    } catch {
+    } catch (error) {
       return {
         ok: false,
         error: {
           message:
-            "Не удалось подготовить Java. Проверьте подключение и повторите попытку.",
+            error instanceof Error &&
+            error.message.startsWith("Недостаточно места")
+              ? error.message
+              : "Не удалось подготовить Java. Проверьте подключение и повторите попытку.",
         },
       };
     }
@@ -962,12 +1527,14 @@ app.whenReady().then(async () => {
       if (typeof serverId !== "string" || !/^[a-z0-9_-]{1,32}$/i.test(serverId))
         throw new ApiError("Некорректный сервер.");
       const manifest = await requestInstallManifest(serverId);
-      reportInstallProgress(serverId, 1);
-      await ensureJavaRuntime();
+      reportInstallProgress(serverId, { phase: "preparing", progress: 0 });
+      await ensureJavaRuntime((event) =>
+        reportInstallProgress(serverId, event),
+      );
       return {
         ok: true,
-        data: await ensureMinecraftRuntime(manifest, (progress) =>
-          reportInstallProgress(serverId, progress),
+        data: await ensureMinecraftRuntime(manifest, (event) =>
+          reportInstallProgress(serverId, event),
         ),
       };
     } catch (error) {
@@ -1111,127 +1678,122 @@ app.whenReady().then(async () => {
       } satisfies IpcResult<null>;
     }
   });
-  ipcMain.handle(
-    "runtime:launch-game",
-    async (
-      _event,
-      serverId: unknown,
-      nickname: unknown,
-      accessToken: unknown,
-    ) => {
-      try {
-        if (await currentRunningGame())
-          throw new ApiError("Игра уже запущена.");
-        if (
-          typeof serverId !== "string" ||
-          !/^[a-z0-9_-]{1,32}$/i.test(serverId)
-        )
-          throw new ApiError("Некорректный сервер.");
-        const parsedNickname = nicknameSchema.safeParse(nickname);
-        if (!parsedNickname.success)
-          throw new ApiError("Некорректный профиль игрока.");
-        if (typeof accessToken !== "string")
-          throw new ApiError("Некорректная сессия.");
-        const manifest = await requestInstallManifest(serverId);
-        reportInstallProgress(serverId, 1);
-        await ensureJavaRuntime();
-        const runtime = await ensureMinecraftRuntime(manifest, (progress) =>
-          reportInstallProgress(serverId, progress),
-        );
-        const launchContext = await refreshedLaunchContext(
-          serverId,
-          accessToken,
-        );
-        if (launchContext.buildId !== manifest.id)
-          throw new ApiError("Состав сборки изменился. Повторите запуск.");
-        const uuid = createHash("md5")
-          .update(`OfflinePlayer:${parsedNickname.data}`)
-          .digest("hex");
-        const bootstrap = await createBridgeBootstrap({
-          ...launchContext,
-          nickname: parsedNickname.data,
-          minecraftUuid: uuid,
-        });
-        bridgeBootstrapClose?.();
-        bridgeBootstrapClose = bootstrap.close;
-        const settings = await getLaunchSettings(serverId);
-        const launchedAt = Date.now();
-        const process = await launchMinecraftRuntime(manifest, runtime, {
-          nickname: parsedNickname.data,
-          uuid,
-          memoryMb: settings.memoryMb,
-          fullscreen: settings.fullscreen,
-          bridgeBootstrap: bootstrap,
-        });
-        if (!process.pid) throw new Error("Minecraft process did not start.");
-        runningGame = {
-          pid: process.pid,
-          serverId,
-          nickname: parsedNickname.data,
-          launchedAt,
-          // Use the same validated instance-path helper as install, removal
-          // and launch. This keeps monitoring correct if storage layout changes.
-          logPath: join(
-            minecraftInstanceDirectory(runtime.instanceId),
-            "logs",
-            "latest.log",
-          ),
-        };
-        let processExited = false;
-        process.once("exit", () => {
-          processExited = true;
-          clearRunningGame();
-        });
-        process.once("error", () => {
-          processExited = true;
-          clearRunningGame();
-        });
-        await persistRunningGame(runningGame);
-        if (processExited || !processIsRunning(runningGame.pid)) {
-          clearRunningGame();
-          throw new Error("Minecraft process exited during startup.");
-        }
-        gameLogWatcher?.close();
-        const activeLogName = basename(runningGame.logPath);
-        // A first Minecraft launch creates `logs` lazily. Make the directory
-        // ourselves and never let monitoring turn a successful game spawn into
-        // a failed IPC response.
-        await mkdir(dirname(runningGame.logPath), { recursive: true });
-        try {
-          // Watch the directory, not latest.log itself: Minecraft may recreate
-          // that file during startup/shutdown, which detaches a file watcher.
-          gameLogWatcher = watch(
-            dirname(runningGame.logPath),
-            { persistent: false },
-            (_event, fileName) => {
-              if (!fileName || fileName.toString() === activeLogName)
-                void currentRunningGame();
-            },
-          );
-        } catch {
-          // Process exit events still keep the launcher state correct.
-          gameLogWatcher = null;
-        }
-        startGameProcessMonitor();
-        await waitForMinecraftWindow(runningGame, () => processExited);
-        reportInstallProgress(serverId, 100);
-        return {
-          ok: true,
-          data: {
-            pid: runningGame.pid,
-            serverId: runningGame.serverId,
-            nickname: runningGame.nickname,
-          },
-        };
-      } catch (error) {
-        const message =
-          error instanceof ApiError
-            ? error.messageForUser
-            : "Не удалось запустить Minecraft. Проверьте подготовку сборки и повторите попытку.";
-        return { ok: false, error: { message } };
+  ipcMain.handle("runtime:launch-game", async (_event, serverId: unknown) => {
+    try {
+      if (await currentRunningGame()) throw new ApiError("Игра уже запущена.");
+      if (typeof serverId !== "string" || !/^[a-z0-9_-]{1,32}$/i.test(serverId))
+        throw new ApiError("Некорректный сервер.");
+      const parsedNickname = nicknameSchema.safeParse(
+        currentSessionUser?.nickname,
+      );
+      if (!parsedNickname.success)
+        throw new ApiError("Некорректный профиль игрока.");
+      const manifest = await requestInstallManifest(serverId);
+      reportInstallProgress(serverId, { phase: "preparing", progress: 0 });
+      await ensureJavaRuntime((event) =>
+        reportInstallProgress(serverId, event),
+      );
+      const runtime = await ensureMinecraftRuntime(manifest, (event) =>
+        reportInstallProgress(serverId, event),
+      );
+      const launchContext =
+        nicknameLaunchContext(serverId, manifest.id) ??
+        (await refreshedLaunchContext(serverId));
+      if (launchContext.buildId !== manifest.id)
+        throw new ApiError("Состав сборки изменился. Повторите запуск.");
+      const uuid = createHash("md5")
+        .update(`OfflinePlayer:${parsedNickname.data}`)
+        .digest("hex");
+      const bootstrap = await createBridgeBootstrap({
+        ...launchContext,
+        nickname: parsedNickname.data,
+        minecraftUuid: uuid,
+      });
+      bridgeBootstrapClose?.();
+      bridgeBootstrapClose = bootstrap.close;
+      const settings = await getLaunchSettings(serverId);
+      const launchedAt = Date.now();
+      const process = await launchMinecraftRuntime(manifest, runtime, {
+        nickname: parsedNickname.data,
+        uuid,
+        memoryMb: settings.memoryMb,
+        fullscreen: settings.fullscreen,
+        bridgeBootstrap: bootstrap,
+      });
+      if (!process.pid) throw new Error("Minecraft process did not start.");
+      runningGame = {
+        pid: process.pid,
+        serverId,
+        nickname: parsedNickname.data,
+        launchedAt,
+        // Use the same validated instance-path helper as install, removal
+        // and launch. This keeps monitoring correct if storage layout changes.
+        logPath: join(
+          minecraftInstanceDirectory(runtime.instanceId),
+          "logs",
+          "latest.log",
+        ),
+      };
+      let processExited = false;
+      process.once("exit", () => {
+        processExited = true;
+        clearRunningGame();
+      });
+      process.once("error", () => {
+        processExited = true;
+        clearRunningGame();
+      });
+      await persistRunningGame(runningGame);
+      if (processExited || !processIsRunning(runningGame.pid)) {
+        clearRunningGame();
+        throw new Error("Minecraft process exited during startup.");
       }
-    },
-  );
+      gameLogWatcher?.close();
+      const activeLogName = basename(runningGame.logPath);
+      // A first Minecraft launch creates `logs` lazily. Make the directory
+      // ourselves and never let monitoring turn a successful game spawn into
+      // a failed IPC response.
+      await mkdir(dirname(runningGame.logPath), { recursive: true });
+      try {
+        // Watch the directory, not latest.log itself: Minecraft may recreate
+        // that file during startup/shutdown, which detaches a file watcher.
+        gameLogWatcher = watch(
+          dirname(runningGame.logPath),
+          { persistent: false },
+          (_event, fileName) => {
+            if (!fileName || fileName.toString() === activeLogName)
+              void currentRunningGame();
+          },
+        );
+      } catch {
+        // Process exit events still keep the launcher state correct.
+        gameLogWatcher = null;
+      }
+      startGameProcessMonitor();
+      await waitForMinecraftWindow(runningGame, () => processExited);
+      reportInstallProgress(serverId, {
+        phase: "complete",
+        progress: 100,
+      });
+      return {
+        ok: true,
+        data: {
+          pid: runningGame.pid,
+          serverId: runningGame.serverId,
+          nickname: runningGame.nickname,
+        },
+      };
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.messageForUser
+          : error instanceof Error &&
+              error.message.startsWith("Недостаточно места")
+            ? error.message
+            : "Не удалось запустить Minecraft. Проверьте подготовку сборки и повторите попытку.";
+      return { ok: false, error: { message } };
+    }
+  });
   createWindow();
 });
 

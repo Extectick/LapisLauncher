@@ -8,15 +8,96 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(uuid()) @db.Uuid
-  nickname     String    @unique @db.VarChar(16)
-  nicknameFold String    @unique @map("nickname_fold") @db.VarChar(16)
-  passwordHash String    @map("password_hash")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  sessions     Session[]
-  gameTickets  GameTicket[]
+  id            String       @id @default(uuid()) @db.Uuid
+  nickname      String       @unique @db.VarChar(16)
+  nicknameFold  String       @unique @map("nickname_fold") @db.VarChar(16)
+  passwordHash  String       @map("password_hash")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  sessions      Session[]
+  gameTickets   GameTicket[]
+  roles         UserRole[]   @relation("UserRoleSubject")
+  assignedRoles UserRole[]   @relation("UserRoleAssigner")
+  auditEvents   AuditEvent[]
 
   @@map("users")
+}
+
+enum RoleScopeType {
+  GLOBAL
+  SERVER
+}
+
+model Role {
+  id           String           @id @default(uuid()) @db.Uuid
+  key          String           @unique @db.VarChar(64)
+  name         String           @db.VarChar(100)
+  isSuperAdmin Boolean          @default(false) @map("is_super_admin")
+  isSystem     Boolean          @default(false) @map("is_system")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+  permissions  RolePermission[]
+  assignments  UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  key         String           @unique @db.VarChar(96)
+  description String           @db.VarChar(255)
+  createdAt   DateTime         @default(now()) @map("created_at")
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id               String        @id @default(uuid()) @db.Uuid
+  userId           String        @map("user_id") @db.Uuid
+  roleId           String        @map("role_id") @db.Uuid
+  scopeType        RoleScopeType @default(GLOBAL) @map("scope_type")
+  scopeId          String?       @map("scope_id") @db.VarChar(32)
+  assignedByUserId String?       @map("assigned_by_user_id") @db.Uuid
+  createdAt        DateTime      @default(now()) @map("created_at")
+  expiresAt        DateTime?     @map("expires_at")
+  user             User          @relation("UserRoleSubject", fields: [userId], references: [id], onDelete: Cascade)
+  assignedBy       User?         @relation("UserRoleAssigner", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+  role             Role          @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([roleId])
+  @@index([scopeType, scopeId])
+  @@map("user_roles")
+}
+
+model AuditEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  actorUserId  String?  @map("actor_user_id") @db.Uuid
+  action       String   @db.VarChar(120)
+  resourceType String   @map("resource_type") @db.VarChar(80)
+  resourceId   String?  @map("resource_id") @db.VarChar(100)
+  serverId     String?  @map("server_id") @db.VarChar(32)
+  before       Json?
+  after        Json?
+  requestId    String?  @map("request_id") @db.VarChar(64)
+  createdAt    DateTime @default(now()) @map("created_at")
+  actor        User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([resourceType, resourceId, createdAt])
+  @@index([serverId, createdAt])
+  @@map("audit_events")
 }
 
 model GameTicket {
@@ -48,21 +129,22 @@ model Session {
 }
 
 model Server {
-  id               String   @id @db.VarChar(32)
-  slug             String   @unique @db.VarChar(64)
-  name             String   @db.VarChar(80)
-  host             String   @db.VarChar(255)
-  port             Int
-  minecraftVersion String   @map("minecraft_version") @db.VarChar(32)
-  loader           String   @db.VarChar(32)
-  activeBuildId    String   @map("active_build_id") @db.VarChar(64)
-  activeBuild      GameBuild @relation(fields: [activeBuildId], references: [id], onDelete: Restrict)
-  visible          Boolean  @default(true)
-  maintenance      Boolean  @default(false)
-  status           String   @default("unknown") @db.VarChar(16)
-  onlinePlayers    Int?     @map("online_players")
-  maxPlayers       Int?     @map("max_players")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  id                String    @id @db.VarChar(32)
+  slug              String    @unique @db.VarChar(64)
+  name              String    @db.VarChar(80)
+  host              String    @db.VarChar(255)
+  port              Int
+  minecraftVersion  String    @map("minecraft_version") @db.VarChar(32)
+  loader            String    @db.VarChar(32)
+  activeBuildId     String    @map("active_build_id") @db.VarChar(64)
+  activeBuild       GameBuild @relation(fields: [activeBuildId], references: [id], onDelete: Restrict)
+  visible           Boolean   @default(true)
+  maintenance       Boolean   @default(false)
+  status            String    @default("unknown") @db.VarChar(16)
+  onlinePlayers     Int?      @map("online_players")
+  onlinePlayerNames String[]  @default([]) @map("online_player_names") @db.VarChar(16)
+  maxPlayers        Int?      @map("max_players")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   @@map("servers")
 }
@@ -87,9 +169,14 @@ model BuildMod {
   fileName  String    @map("file_name") @db.VarChar(180)
   sha1      String    @db.Char(40)
   required  Boolean   @default(true)
+  enabled   Boolean   @default(true)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
   build     GameBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
 
   @@unique([buildId, fileName])
   @@index([buildId])
+  @@index([buildId, enabled])
+  @@index([buildId, createdAt])
   @@map("build_mods")
 }

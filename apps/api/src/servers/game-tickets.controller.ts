@@ -1,7 +1,9 @@
 import { Body, Controller, ForbiddenException, Headers, HttpCode, Inject, Post } from '@nestjs/common';
 import { ConsumedGameTicket, consumeGameTicketSchema } from '@lapis/contracts';
 import { GameTicketsService } from './game-tickets.service';
+import { Public } from '../auth/public.decorator';
 
+@Public()
 @Controller('v1/game-tickets')
 export class GameTicketsController {
   constructor(@Inject(GameTicketsService) private readonly tickets: GameTicketsService) {}
