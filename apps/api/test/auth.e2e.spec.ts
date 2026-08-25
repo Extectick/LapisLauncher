@@ -607,6 +607,7 @@ describe.skipIf(process.env.RUN_DATABASE_TESTS !== "1")("auth API", () => {
     expect(launchContext.statusCode).toBe(201);
     expect(launchContext.json()).toEqual(
       expect.objectContaining({
+        serverName: "Lapis",
         nickname: "TicketUser",
         minecraftUuid: createHash("md5")
           .update("OfflinePlayer:TicketUser")

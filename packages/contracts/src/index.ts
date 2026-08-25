@@ -269,6 +269,7 @@ export type GameTicket = z.infer<typeof gameTicketSchema>;
 // This is returned only to Electron main process and is never exposed to the renderer.
 export const gameLaunchContextSchema = gameTicketSchema.extend({
   serverId: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
+  serverName: z.string().trim().min(1).max(80),
   host: z.string().min(1).max(255),
   port: z.number().int().min(1).max(65535),
   buildId: z.string().min(1).max(64),

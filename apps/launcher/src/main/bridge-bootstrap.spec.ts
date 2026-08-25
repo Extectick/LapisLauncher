@@ -7,6 +7,7 @@ import {
 
 const initial: GameLaunchContext = {
   serverId: "main",
+  serverName: "Lapis",
   host: "195.208.129.43",
   port: 25565,
   buildId: "lapis-26.2-fabric-0.19.3",

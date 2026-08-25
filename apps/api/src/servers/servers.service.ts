@@ -691,6 +691,7 @@ export class ServersService {
       where: { id: serverId, visible: true, maintenance: false },
       select: {
         id: true,
+        name: true,
         host: true,
         port: true,
         activeBuild: { select: { id: true, loader: true } },
@@ -707,6 +708,7 @@ export class ServersService {
       })
       .parse({
         serverId: server.id,
+        serverName: server.name,
         host: server.host,
         port: server.port,
         buildId: server.activeBuild.id,
