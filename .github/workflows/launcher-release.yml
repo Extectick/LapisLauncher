@@ -405,7 +405,13 @@ jobs:
           stage="$target/.staging-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           ssh_options=(-i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15)
           ssh "${ssh_options[@]}" "$remote" "install -d -m 755 '$stage'"
-          scp "${ssh_options[@]}" release/* "$remote:$stage/"
+          scp "${ssh_options[@]}" \
+            release/*.nupkg \
+            release/*-Setup.exe \
+            release/releases.stable.json \
+            release/assets.stable.json \
+            release/RELEASES-stable \
+            "$remote:$stage/"
           ssh "${ssh_options[@]}" "$remote" "set -eu; \
             for file in '$stage'/*.nupkg '$stage'/*-Setup.exe; do [ ! -e \"\$file\" ] || mv -f \"\$file\" '$target/'; done; \
             for name in assets.stable.json RELEASES-stable; do [ ! -e '$stage/'\"\$name\" ] || mv -f '$stage/'\"\$name\" '$target/'\"\$name\"; done; \
