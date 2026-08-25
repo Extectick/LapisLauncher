@@ -14,3 +14,4 @@ coverage/
 apps/api/generated/
 .lapis/
 .local/
+apps/launcher/resources/lapis-bridge-client.jar

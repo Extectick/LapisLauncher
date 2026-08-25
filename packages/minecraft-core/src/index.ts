@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
@@ -293,12 +294,18 @@ async function downloadVerified(
   } catch {
     /* file is missing or invalid and will be downloaded */
   }
-  const response = dispatcher
-    ? await undiciFetch(url, { dispatcher })
-    : await fetch(url);
-  if (!response.ok)
-    throw new Error(`Не удалось скачать файл (${response.status}).`);
-  const content = Buffer.from(await response.arrayBuffer());
+  const parsedUrl = new URL(url);
+  const content =
+    parsedUrl.protocol === "file:"
+      ? await readFile(fileURLToPath(parsedUrl))
+      : await (async () => {
+          const response = dispatcher
+            ? await undiciFetch(url, { dispatcher })
+            : await fetch(url);
+          if (!response.ok)
+            throw new Error(`Не удалось скачать файл (${response.status}).`);
+          return Buffer.from(await response.arrayBuffer());
+        })();
   const actualSha1 = createHash("sha1").update(content).digest("hex");
   if (actualSha1 !== expectedSha1)
     throw new Error("Проверка целостности скачанного файла не пройдена.");

@@ -48,8 +48,17 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Set up Java 25
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build launcher Bridge
+        run: ./fabric-bridge/gradlew -p fabric-bridge :bridge-client:build :bridge-server:build --no-daemon
 
       - name: Generate Prisma client
         run: pnpm --filter @lapis/api prisma:generate
@@ -101,6 +110,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      - name: Set up Java 25
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "25"
 
       - name: Set up .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
@@ -207,6 +222,21 @@ jobs:
           $env:VELOPACK_SIGN_PARAMS = "/f `"$env:LAPIS_SIGNING_CERTIFICATE`" /p `"$env:PFX_PASSWORD`" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256"
           pnpm package:win:release
 
+      - name: Stage Lapis Bridge Server
+        shell: pwsh
+        run: |
+          $properties = Get-Content fabric-bridge/gradle.properties
+          $modVersion = ($properties | Where-Object { $_ -like "mod_version=*" }).Split("=", 2)[1]
+          if ($modVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Lapis Bridge version is invalid."
+          }
+          $source = "fabric-bridge/bridge-server/build/libs/bridge-server-$modVersion.jar"
+          $target = "apps/launcher/release/velopack/LapisBridgeServer-$modVersion.jar"
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Lapis Bridge Server artifact is missing."
+          }
+          Copy-Item -LiteralPath $source -Destination $target
+
       - name: Verify release and signer
         shell: pwsh
         env:
@@ -290,6 +320,7 @@ jobs:
             apps/launcher/release/velopack/releases.stable.json
             apps/launcher/release/velopack/assets.stable.json
             apps/launcher/release/velopack/RELEASES-stable
+            apps/launcher/release/velopack/LapisBridgeServer-*.jar
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -301,6 +332,7 @@ jobs:
           subject-path: |
             apps/launcher/release/velopack/LapisLauncher-${{ steps.version.outputs.version }}-stable-*.nupkg
             apps/launcher/release/velopack/LapisLauncher-stable-Setup.exe
+            apps/launcher/release/velopack/LapisBridgeServer-*.jar
 
       - name: Publish GitHub Release
         if: github.ref_type == 'tag'
@@ -314,6 +346,7 @@ jobs:
               Where-Object {
                 $_.Name -like "LapisLauncher-$version-stable-*.nupkg" -or
                 $_.Name -eq "LapisLauncher-stable-Setup.exe" -or
+                $_.Name -like "LapisBridgeServer-*.jar" -or
                 $_.Name -in @("releases.stable.json", "assets.stable.json", "RELEASES-stable")
               } |
               ForEach-Object FullName

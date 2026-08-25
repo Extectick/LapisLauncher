@@ -67,12 +67,16 @@ public final class LapisBridgeServer implements ModInitializer {
         return;
       }
       synchronizer.waitFor(CompletableFuture.supplyAsync(() -> verify(listener, challenge, response))
-          .thenCompose(result -> server.submit(() -> {
-            if (!result.accepted) {
+          .thenCompose(result -> {
+            if (result.accepted) {
+              LOGGER.info("Lapis login verification succeeded for '{}'.", listener.getUserName());
+              return CompletableFuture.completedFuture(null);
+            }
+            return server.submit(() -> {
               LOGGER.warn("Lapis login verification failed for '{}': {}", listener.getUserName(), result.message);
               listener.disconnect(Component.literal(result.message));
-            }
-          })));
+            });
+          }));
     });
   }
 

@@ -12,8 +12,6 @@ import log from "electron-log/main";
 import type { OpenDialogOptions } from "electron";
 import { is } from "@electron-toolkit/utils";
 import { FSWatcher, watch } from "node:fs";
-import { createServer, Server as HttpServer } from "node:http";
-import { AddressInfo } from "node:net";
 import {
   appendFile,
   mkdir,
@@ -26,7 +24,8 @@ import {
 } from "node:fs/promises";
 import { homedir, totalmem } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { randomBytes, timingSafeEqual, verify } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { createHash, verify } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -90,6 +89,7 @@ import {
   minecraftLogShowsStopping,
 } from "./game-process-lifecycle";
 import { initializeLauncherLogging } from "./logging";
+import { createBridgeBootstrap } from "./bridge-bootstrap";
 
 // Velopack lifecycle hooks must be registered before the rest of the Electron
 // application starts. Pending updates are applied explicitly after the
@@ -180,6 +180,8 @@ let mainWindow: BrowserWindow | null = null;
 let gameLogWatcher: FSWatcher | null = null;
 let bridgeBootstrapClose: (() => void) | null = null;
 let gameProcessMonitor: NodeJS.Timeout | null = null;
+let closeAfterGameExit = false;
+let appIsQuitting = false;
 const gameShutdownFallback = new MinecraftShutdownFallback();
 
 class ApiError extends Error {
@@ -604,6 +606,7 @@ async function selectSkinPng(): Promise<string | null> {
 async function requestInstallManifest(
   serverId: string,
 ): Promise<GameInstallManifest> {
+  let manifest: GameInstallManifest;
   try {
     const response = await net.fetch(
       apiUrl(`/v1/servers/${encodeURIComponent(serverId)}/install-manifest`),
@@ -618,12 +621,48 @@ async function requestInstallManifest(
     );
     if (!signatureIsValid)
       throw new Error("Invalid install manifest signature");
-    return signed.payload;
+    manifest = signed.payload;
   } catch {
     throw new ApiError(
       "Не удалось проверить подпись состава сборки. Повторите попытку.",
     );
   }
+  try {
+    return await withLauncherManagedBridge(manifest);
+  } catch (error) {
+    runtimeLog.error("Unable to prepare launcher-managed Bridge client", error);
+    throw new ApiError(
+      "Не удалось подготовить системный компонент сборки. Переустановите лаунчер.",
+    );
+  }
+}
+
+async function withLauncherManagedBridge(
+  manifest: GameInstallManifest,
+): Promise<GameInstallManifest> {
+  const bridgePath = is.dev
+    ? join(app.getAppPath(), "resources", "lapis-bridge-client.jar")
+    : join(process.resourcesPath, "core-mods", "lapis-bridge-client.jar");
+  const bytes = await readFile(bridgePath);
+  const systemBridge = {
+    fileName: "lapis-bridge-client.jar",
+    url: pathToFileURL(bridgePath).toString(),
+    sha1: createHash("sha1").update(bytes).digest("hex"),
+    size: bytes.length,
+    required: true,
+  };
+  return {
+    ...manifest,
+    mods: [
+      ...manifest.mods.filter(
+        (mod) =>
+          !/^lapis-bridge-client(?:-[A-Za-z0-9._+-]+)?\.jar$/i.test(
+            mod.fileName,
+          ),
+      ),
+      systemBridge,
+    ],
+  };
 }
 
 async function requestGameLaunchContext(
@@ -973,6 +1012,10 @@ function clearRunningGame(): void {
   bridgeBootstrapClose = null;
   if (hadRunningGame && mainWindow && !mainWindow.isDestroyed())
     mainWindow.webContents.send("runtime:game-exited");
+  if (hadRunningGame && closeAfterGameExit) {
+    closeAfterGameExit = false;
+    app.quit();
+  }
 }
 
 function scheduleStuckGameTermination(game: RunningGame): void {
@@ -1025,60 +1068,6 @@ function reportInstallProgress(
       ...event,
       progress: Math.max(0, Math.min(100, Math.round(event.progress))),
     });
-}
-
-type BridgeBootstrap = { port: number; nonce: string; close: () => void };
-
-function nonceMatches(provided: string | undefined, expected: string): boolean {
-  if (!provided) return false;
-  const actual = Buffer.from(provided);
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
-}
-
-async function createBridgeBootstrap(
-  context: Omit<GameLaunchContext, "expiresAt">,
-): Promise<BridgeBootstrap> {
-  const nonce = randomBytes(32).toString("base64url");
-  let consumed = false;
-  let timeout: NodeJS.Timeout | undefined;
-  let server: HttpServer | undefined;
-  const close = (): void => {
-    if (timeout) clearTimeout(timeout);
-    timeout = undefined;
-    server?.close();
-    server = undefined;
-  };
-  server = createServer((request, response) => {
-    const bootstrapHeader = request.headers["x-lapis-bootstrap"];
-    const validRequest =
-      request.method === "POST" &&
-      request.url === "/v1/launch-context" &&
-      nonceMatches(
-        typeof bootstrapHeader === "string" ? bootstrapHeader : undefined,
-        nonce,
-      ) &&
-      !consumed;
-    if (!validRequest) {
-      response.writeHead(404).end();
-      return;
-    }
-    consumed = true;
-    const payload = JSON.stringify(context);
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      "content-length": Buffer.byteLength(payload),
-    });
-    response.end(payload, close);
-  });
-  await new Promise<void>((resolve, reject) => {
-    server?.once("error", reject);
-    server?.listen(0, "127.0.0.1", () => resolve());
-  });
-  timeout = setTimeout(close, 90_000);
-  timeout.unref();
-  return { port: (server.address() as AddressInfo).port, nonce, close };
 }
 
 async function currentRunningGame(): Promise<RunningGameStatus | null> {
@@ -1190,6 +1179,13 @@ function createWindow(): void {
       });
   });
   mainWindow.on("focus", checkForUpdatesIfStale);
+  mainWindow.on("close", (event) => {
+    if (!appIsQuitting && runningGame) {
+      event.preventDefault();
+      closeAfterGameExit = true;
+      mainWindow?.hide();
+    }
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -1215,6 +1211,7 @@ function createWindow(): void {
 if (hasSingleInstanceLock)
   app.on("second-instance", () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    closeAfterGameExit = false;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
@@ -1790,7 +1787,12 @@ app.whenReady().then(async () => {
       if (launchContext.buildId !== manifest.id)
         throw new ApiError("Состав сборки изменился. Повторите запуск.");
       launchStage = "bootstrap";
-      const bootstrap = await createBridgeBootstrap(launchContext);
+      const bootstrap = await createBridgeBootstrap(
+        launchContext,
+        () => refreshedLaunchContext(serverId),
+        (error) =>
+          runtimeLog.error("Unable to renew Minecraft game ticket", error),
+      );
       bridgeBootstrapClose?.();
       bridgeBootstrapClose = bootstrap.close;
       const settings = await getLaunchSettings(serverId);
@@ -1889,4 +1891,7 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", shutdownUpdater);
+app.on("before-quit", () => {
+  appIsQuitting = true;
+  shutdownUpdater();
+});

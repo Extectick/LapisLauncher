@@ -6,8 +6,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -27,10 +29,10 @@ import net.minecraft.network.FriendlyByteBuf;
 
 import ru.lapis.bridge.Protocol;
 
-/** Reads a one-time launch context from the loopback endpoint created by Lapis Launcher. */
+/** Reads short-lived per-connection launch contexts from the loopback endpoint created by Lapis Launcher. */
 public final class LapisBridgeClient implements ClientModInitializer {
   private static final Pattern FIELD = Pattern.compile("\\\"([a-zA-Z]+)\\\"\\s*:\\s*(?:\\\"([^\\\"]*)\\\"|([0-9]+))");
-  private volatile LaunchContext launchContext;
+  private final AtomicReference<LaunchContext> launchContext = new AtomicReference<>();
   private boolean connectionStarted;
 
   @Override
@@ -47,17 +49,22 @@ public final class LapisBridgeClient implements ClientModInitializer {
     connectionStarted = true;
     CompletableFuture.supplyAsync(LapisBridgeClient::readContext).whenComplete((context, error) -> client.execute(() -> {
       if (error != null) return;
-      launchContext = context;
+      launchContext.set(context);
       String address = context.host + ":" + context.port;
-      ConnectScreen.startConnecting(new TitleScreen(), client, new ServerAddress(context.host, context.port), new ServerData("Lapis", address, ServerData.Type.OTHER), false, null);
+      ServerData server = new ServerData("Lapis", address, ServerData.Type.OTHER);
+      // Lapis is a launcher-managed server whose resource pack is part of the
+      // selected build. Mark it as trusted before connecting so Minecraft does
+      // not show the resource-pack confirmation on every transient auto-connect.
+      server.setResourcePackStatus(ServerData.ServerPackStatus.ENABLED);
+      ConnectScreen.startConnecting(new TitleScreen(), client, new ServerAddress(context.host, context.port), server, false, null);
     }));
   }
 
   private CompletableFuture<FriendlyByteBuf> answerChallenge(Minecraft client, ClientHandshakePacketListenerImpl listener, FriendlyByteBuf buffer, Consumer<ChannelFutureListener> callbacks) {
     return CompletableFuture.supplyAsync(() -> {
       Protocol.Challenge challenge = Protocol.readChallenge(buffer);
-      LaunchContext context = launchContext;
-      if (context == null) throw new IllegalStateException("Launch context is unavailable");
+      LaunchContext context = launchContext.getAndSet(null);
+      if (context == null || context.isExpiring()) context = readContext();
       if (challenge.protocolVersion() != Protocol.VERSION || !challenge.serverId().equals(context.serverId) || !challenge.buildId().equals(context.buildId)) {
         throw new IllegalStateException("Lapis launch context does not match this server");
       }
@@ -91,7 +98,7 @@ public final class LapisBridgeClient implements ClientModInitializer {
     }
   }
 
-  private record LaunchContext(String serverId, String host, int port, String buildId, String ticket, String nickname, String minecraftUuid, int bridgeProtocolVersion) {
+  private record LaunchContext(String serverId, String host, int port, String buildId, String ticket, String nickname, String minecraftUuid, int bridgeProtocolVersion, Instant expiresAt) {
     static LaunchContext parse(String json) {
       String serverId = field(json, "serverId");
       String host = field(json, "host");
@@ -101,10 +108,13 @@ public final class LapisBridgeClient implements ClientModInitializer {
       String nickname = field(json, "nickname");
       String minecraftUuid = field(json, "minecraftUuid");
       int protocol = Integer.parseInt(field(json, "bridgeProtocolVersion"));
+      Instant expiresAt = Instant.parse(field(json, "expiresAt"));
       if (!nickname.matches("[A-Za-z0-9_]{3,16}") || !minecraftUuid.matches("[a-fA-F0-9]{32}") || ticket.length() < 32) throw new IllegalArgumentException("Invalid launch context");
       if (host.isBlank() || port < 1 || port > 65535) throw new IllegalArgumentException("Invalid server address");
-      return new LaunchContext(serverId, host, port, buildId, ticket, nickname, minecraftUuid, protocol);
+      return new LaunchContext(serverId, host, port, buildId, ticket, nickname, minecraftUuid, protocol, expiresAt);
     }
+
+    boolean isExpiring() { return expiresAt.isBefore(Instant.now().plusSeconds(5)); }
 
     private static String field(String json, String name) {
       Matcher matcher = FIELD.matcher(json);
