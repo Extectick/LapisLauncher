@@ -58,7 +58,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build launcher Bridge
-        run: ./fabric-bridge/gradlew -p fabric-bridge :bridge-client:build :bridge-server:build --no-daemon
+        run: bash ./fabric-bridge/gradlew -p fabric-bridge :bridge-client:build :bridge-server:build --no-daemon
 
       - name: Generate Prisma client
         run: pnpm --filter @lapis/api prisma:generate
