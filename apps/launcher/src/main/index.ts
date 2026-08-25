@@ -8,6 +8,7 @@ import {
   shell,
 } from "electron";
 import { VelopackApp } from "velopack";
+import log from "electron-log/main";
 import type { OpenDialogOptions } from "electron";
 import { is } from "@electron-toolkit/utils";
 import { FSWatcher, watch } from "node:fs";
@@ -16,6 +17,7 @@ import { AddressInfo } from "node:net";
 import {
   appendFile,
   mkdir,
+  open,
   readFile,
   rename,
   rm,
@@ -82,6 +84,12 @@ import {
   shutdownUpdater,
 } from "./updater";
 import type { AppUpdateStatus } from "../shared/update-types";
+import {
+  MINECRAFT_SHUTDOWN_GRACE_MS,
+  MinecraftShutdownFallback,
+  minecraftLogShowsStopping,
+} from "./game-process-lifecycle";
+import { initializeLauncherLogging } from "./logging";
 
 // Velopack lifecycle hooks must be registered before the rest of the Electron
 // application starts. Pending updates are applied explicitly after the
@@ -108,6 +116,7 @@ const MANIFEST_PUBLIC_KEY = (
     : PRODUCTION_MANIFEST_PUBLIC_KEY
 ).replace(/\\n/g, "\n");
 const execFileAsync = promisify(execFile);
+const runtimeLog = log.scope("runtime");
 
 function apiUrl(path: string): string {
   const baseUrl = `${API_URL.replace(/\/+$/, "")}/`;
@@ -171,6 +180,7 @@ let mainWindow: BrowserWindow | null = null;
 let gameLogWatcher: FSWatcher | null = null;
 let bridgeBootstrapClose: (() => void) | null = null;
 let gameProcessMonitor: NodeJS.Timeout | null = null;
+const gameShutdownFallback = new MinecraftShutdownFallback();
 
 class ApiError extends Error {
   constructor(
@@ -868,6 +878,34 @@ function processIsRunning(pid: number): boolean {
   }
 }
 
+async function terminateProcessTree(pid: number): Promise<void> {
+  if (!processIsRunning(pid)) return;
+  if (process.platform === "win32") {
+    await execFileAsync("taskkill.exe", ["/pid", String(pid), "/t", "/f"], {
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    return;
+  }
+  process.kill(pid, "SIGKILL");
+}
+
+async function readLogTail(
+  path: string,
+  maximumBytes: number,
+): Promise<string> {
+  const handle = await open(path, "r");
+  try {
+    const file = await handle.stat();
+    const bytesToRead = Math.min(file.size, maximumBytes);
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    await handle.read(buffer, 0, bytesToRead, file.size - bytesToRead);
+    return buffer.toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 async function processMatchesPersistedGame(
   game: RunningGame,
 ): Promise<boolean> {
@@ -923,16 +961,50 @@ async function restoreRunningGame(): Promise<void> {
 }
 
 function clearRunningGame(): void {
+  const hadRunningGame = runningGame !== null;
   runningGame = null;
   void rm(runningGameStatePath(), { force: true }).catch(() => undefined);
+  gameShutdownFallback.cancel();
   if (gameProcessMonitor) clearInterval(gameProcessMonitor);
   gameProcessMonitor = null;
   gameLogWatcher?.close();
   gameLogWatcher = null;
   bridgeBootstrapClose?.();
   bridgeBootstrapClose = null;
-  if (mainWindow && !mainWindow.isDestroyed())
+  if (hadRunningGame && mainWindow && !mainWindow.isDestroyed())
     mainWindow.webContents.send("runtime:game-exited");
+}
+
+function scheduleStuckGameTermination(game: RunningGame): void {
+  const scheduled = gameShutdownFallback.schedule(game.pid, (pid) => {
+    void (async () => {
+      const activeGame = runningGame;
+      if (!activeGame || activeGame.pid !== pid) return;
+      if (!processIsRunning(pid)) {
+        clearRunningGame();
+        return;
+      }
+      runtimeLog.warn(
+        `Minecraft pid=${pid} did not exit within ${MINECRAFT_SHUTDOWN_GRACE_MS}ms after Stopping; terminating its process tree`,
+      );
+      try {
+        await terminateProcessTree(pid);
+      } catch (error) {
+        if (processIsRunning(pid)) {
+          runtimeLog.error(
+            `Unable to terminate stuck Minecraft pid=${pid}`,
+            error,
+          );
+          return;
+        }
+      }
+      if (runningGame?.pid === pid) clearRunningGame();
+    })();
+  });
+  if (scheduled)
+    runtimeLog.info(
+      `Minecraft pid=${game.pid} is shutting down; grace period started`,
+    );
 }
 
 function startGameProcessMonitor(): void {
@@ -1019,11 +1091,9 @@ async function currentRunningGame(): Promise<RunningGameStatus | null> {
   try {
     const logInfo = await stat(game.logPath);
     if (logInfo.mtimeMs >= game.launchedAt) {
-      const logTail = (await readFile(game.logPath, "utf8")).slice(-65_536);
-      if (/\[.+?\/(?:INFO|WARN)\]: Stopping!\s*$/m.test(logTail)) {
-        clearRunningGame();
-        return null;
-      }
+      const logTail = await readLogTail(game.logPath, 65_536);
+      if (minecraftLogShowsStopping(logTail))
+        scheduleStuckGameTermination(game);
     }
   } catch {
     // The log can be unavailable while Minecraft creates its game directory.
@@ -1044,7 +1114,7 @@ async function waitForMinecraftWindow(
     try {
       const logInfo = await stat(game.logPath);
       if (logInfo.mtimeMs >= game.launchedAt) {
-        const logTail = (await readFile(game.logPath, "utf8")).slice(-131_072);
+        const logTail = await readLogTail(game.logPath, 131_072);
         if (readyMarker.test(logTail)) return;
       }
     } catch {
@@ -1053,6 +1123,43 @@ async function waitForMinecraftWindow(
     await new Promise<void>((resolve) => setTimeout(resolve, 250));
   }
   // Keep the game usable even if a mod changes its startup log format.
+}
+
+type MinecraftLaunchStage =
+  | "validation"
+  | "manifest"
+  | "java"
+  | "build"
+  | "authorization"
+  | "bootstrap"
+  | "spawn"
+  | "window";
+
+function minecraftLaunchFailureMessage(
+  error: unknown,
+  stage: MinecraftLaunchStage,
+): string {
+  if (error instanceof ApiError) return error.messageForUser;
+  if (error instanceof Error && error.message.startsWith("Недостаточно места"))
+    return error.message;
+  const code =
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+      ? error.code
+      : null;
+  if (code && ["EBUSY", "EACCES", "EPERM"].includes(code))
+    return "Файлы сборки заняты другим процессом. Закройте Minecraft и повторите попытку.";
+  if (stage === "spawn")
+    return "Не удалось создать процесс Minecraft. Перезапустите лаунчер и повторите попытку.";
+  if (stage === "window")
+    return "Minecraft завершился во время запуска. Подробности сохранены в журнале лаунчера.";
+  if (stage === "java")
+    return "Не удалось подготовить Java для запуска Minecraft. Повторите попытку.";
+  if (stage === "build")
+    return "Не удалось подготовить файлы сборки. Повторите попытку.";
+  return "Не удалось подготовить запуск Minecraft. Повторите попытку.";
 }
 
 function createWindow(): void {
@@ -1115,6 +1222,7 @@ if (hasSingleInstanceLock)
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  initializeLauncherLogging();
   await restoreRunningGame();
   app.setAppUserModelId(WINDOWS_APP_ID);
   ipcMain.handle(
@@ -1639,14 +1747,15 @@ app.whenReady().then(async () => {
     const game = await currentRunningGame();
     if (!game) return { ok: true, data: null } satisfies IpcResult<null>;
     try {
-      await execFileAsync(
-        "taskkill.exe",
-        ["/pid", String(game.pid), "/t", "/f"],
-        { windowsHide: true },
-      );
+      await terminateProcessTree(game.pid);
       clearRunningGame();
       return { ok: true, data: null } satisfies IpcResult<null>;
-    } catch {
+    } catch (error) {
+      if (!processIsRunning(game.pid)) {
+        clearRunningGame();
+        return { ok: true, data: null } satisfies IpcResult<null>;
+      }
+      runtimeLog.error(`Unable to stop Minecraft pid=${game.pid}`, error);
       return {
         ok: false,
         error: { message: "Не удалось остановить Minecraft." },
@@ -1654,26 +1763,39 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle("runtime:launch-game", async (_event, serverId: unknown) => {
+    let launchStage: MinecraftLaunchStage = "validation";
     try {
-      if (await currentRunningGame()) throw new ApiError("Игра уже запущена.");
+      const activeGame = await currentRunningGame();
+      if (activeGame)
+        throw new ApiError(
+          gameShutdownFallback.isPendingFor(activeGame.pid)
+            ? "Minecraft завершает работу. Повторите запуск через несколько секунд."
+            : "Игра уже запущена.",
+        );
       if (typeof serverId !== "string" || !/^[a-z0-9_-]{1,32}$/i.test(serverId))
         throw new ApiError("Некорректный сервер.");
+      launchStage = "manifest";
       const manifest = await requestInstallManifest(serverId);
       reportInstallProgress(serverId, { phase: "preparing", progress: 0 });
+      launchStage = "java";
       await ensureJavaRuntime((event) =>
         reportInstallProgress(serverId, event),
       );
+      launchStage = "build";
       const runtime = await ensureMinecraftRuntime(manifest, (event) =>
         reportInstallProgress(serverId, event),
       );
+      launchStage = "authorization";
       const launchContext = await refreshedLaunchContext(serverId);
       if (launchContext.buildId !== manifest.id)
         throw new ApiError("Состав сборки изменился. Повторите запуск.");
+      launchStage = "bootstrap";
       const bootstrap = await createBridgeBootstrap(launchContext);
       bridgeBootstrapClose?.();
       bridgeBootstrapClose = bootstrap.close;
       const settings = await getLaunchSettings(serverId);
       const launchedAt = Date.now();
+      launchStage = "spawn";
       const process = await launchMinecraftRuntime(manifest, runtime, {
         nickname: launchContext.nickname,
         uuid: launchContext.minecraftUuid,
@@ -1696,18 +1818,24 @@ app.whenReady().then(async () => {
         ),
       };
       let processExited = false;
-      process.once("exit", () => {
+      process.once("exit", (code, signal) => {
         processExited = true;
+        runtimeLog.info(
+          `Minecraft pid=${process.pid ?? "unknown"} exited code=${code ?? "none"} signal=${signal ?? "none"}`,
+        );
         clearRunningGame();
       });
-      process.once("error", () => {
+      process.once("error", (error) => {
         processExited = true;
+        runtimeLog.error("Minecraft child process error", error);
         clearRunningGame();
       });
       await persistRunningGame(runningGame);
       if (processExited || !processIsRunning(runningGame.pid)) {
         clearRunningGame();
-        throw new Error("Minecraft process exited during startup.");
+        throw new ApiError(
+          "Minecraft завершился сразу после запуска. Подробности сохранены в журнале лаунчера.",
+        );
       }
       gameLogWatcher?.close();
       const activeLogName = basename(runningGame.logPath);
@@ -1731,6 +1859,7 @@ app.whenReady().then(async () => {
         gameLogWatcher = null;
       }
       startGameProcessMonitor();
+      launchStage = "window";
       await waitForMinecraftWindow(runningGame, () => processExited);
       reportInstallProgress(serverId, {
         phase: "complete",
@@ -1745,13 +1874,11 @@ app.whenReady().then(async () => {
         },
       };
     } catch (error) {
-      const message =
-        error instanceof ApiError
-          ? error.messageForUser
-          : error instanceof Error &&
-              error.message.startsWith("Недостаточно места")
-            ? error.message
-            : "Не удалось запустить Minecraft. Проверьте подготовку сборки и повторите попытку.";
+      runtimeLog.error(
+        `Minecraft launch failed at stage=${launchStage} server=${typeof serverId === "string" ? serverId : "invalid"}`,
+        error,
+      );
+      const message = minecraftLaunchFailureMessage(error, launchStage);
       return { ok: false, error: { message } };
     }
   });

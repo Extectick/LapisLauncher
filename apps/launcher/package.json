@@ -1,6 +1,6 @@
 {
   "name": "@lapis/launcher",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "LapisLauncher for managed Fabric Minecraft builds",
   "author": "Lapis Launcher",
   "private": true,
@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "test": "vitest run src/main/update-policy.spec.ts",
+    "test": "vitest run src/main",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "package:win": "electron-vite build && electron-builder --win --dir && node scripts/package-velopack.mjs",
     "package:win:release": "node scripts/check-release-signing.mjs && electron-vite build && electron-builder --win --dir && node scripts/package-velopack.mjs --release"

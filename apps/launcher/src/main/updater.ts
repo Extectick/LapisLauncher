@@ -11,6 +11,7 @@ import {
   requiredUpdateDiskBytes,
   updateRetryDelayMs,
 } from "./update-policy";
+import { initializeLauncherLogging } from "./logging";
 
 const DEFAULT_CHECK_INTERVAL_MINUTES = 30;
 const MIN_CHECK_INTERVAL_MINUTES = 10;
@@ -265,11 +266,7 @@ export async function initializeUpdater(
 ): Promise<void> {
   targetWindow = window;
   installGuard = options.installGuard ?? (async () => null);
-  log.initialize();
-  log.transports.file.level = "info";
-  log.transports.file.maxSize = 2 * 1024 * 1024;
-  log.transports.file.resolvePathFn = () =>
-    join(app.getPath("userData"), "logs", "updater.log");
+  initializeLauncherLogging();
 
   if (!app.isPackaged) {
     publishStatus(currentStatus("disabled"));
