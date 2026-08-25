@@ -681,7 +681,12 @@ export class ServersService {
 
   async launchTarget(
     serverId: string,
-  ): Promise<Omit<GameLaunchContext, "ticket" | "expiresAt">> {
+  ): Promise<
+    Omit<
+      GameLaunchContext,
+      "ticket" | "expiresAt" | "nickname" | "minecraftUuid"
+    >
+  > {
     const server = await this.prisma.server.findFirst({
       where: { id: serverId, visible: true, maintenance: false },
       select: {
@@ -694,7 +699,12 @@ export class ServersService {
     if (!server?.activeBuild || server.activeBuild.loader !== "fabric")
       throw new Error("Сервер недоступен.");
     return gameLaunchContextSchema
-      .omit({ ticket: true, expiresAt: true })
+      .omit({
+        ticket: true,
+        expiresAt: true,
+        nickname: true,
+        minecraftUuid: true,
+      })
       .parse({
         serverId: server.id,
         host: server.host,

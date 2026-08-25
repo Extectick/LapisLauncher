@@ -258,6 +258,11 @@ export const gameLaunchContextSchema = gameTicketSchema.extend({
   host: z.string().min(1).max(255),
   port: z.number().int().min(1).max(65535),
   buildId: z.string().min(1).max(64),
+  // The API owns the canonical casing of a nickname. Minecraft offline UUIDs
+  // are case-sensitive, so the launcher must never derive this identity from
+  // the spelling entered on the login screen or from a stale local session.
+  nickname: nicknameSchema,
+  minecraftUuid: z.string().regex(/^[a-f0-9]{32}$/),
   bridgeProtocolVersion: z.literal(1),
 });
 export type GameLaunchContext = z.infer<typeof gameLaunchContextSchema>;

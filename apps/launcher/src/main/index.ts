@@ -24,7 +24,7 @@ import {
 } from "node:fs/promises";
 import { homedir, totalmem } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { createHash, randomBytes, timingSafeEqual, verify } from "node:crypto";
+import { randomBytes, timingSafeEqual, verify } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -965,10 +965,7 @@ function nonceMatches(provided: string | undefined, expected: string): boolean {
 }
 
 async function createBridgeBootstrap(
-  context: Omit<GameLaunchContext, "expiresAt"> & {
-    nickname: string;
-    minecraftUuid: string;
-  },
+  context: Omit<GameLaunchContext, "expiresAt">,
 ): Promise<BridgeBootstrap> {
   const nonce = randomBytes(32).toString("base64url");
   let consumed = false;
@@ -1661,11 +1658,6 @@ app.whenReady().then(async () => {
       if (await currentRunningGame()) throw new ApiError("Игра уже запущена.");
       if (typeof serverId !== "string" || !/^[a-z0-9_-]{1,32}$/i.test(serverId))
         throw new ApiError("Некорректный сервер.");
-      const parsedNickname = nicknameSchema.safeParse(
-        currentSessionUser?.nickname,
-      );
-      if (!parsedNickname.success)
-        throw new ApiError("Некорректный профиль игрока.");
       const manifest = await requestInstallManifest(serverId);
       reportInstallProgress(serverId, { phase: "preparing", progress: 0 });
       await ensureJavaRuntime((event) =>
@@ -1677,21 +1669,14 @@ app.whenReady().then(async () => {
       const launchContext = await refreshedLaunchContext(serverId);
       if (launchContext.buildId !== manifest.id)
         throw new ApiError("Состав сборки изменился. Повторите запуск.");
-      const uuid = createHash("md5")
-        .update(`OfflinePlayer:${parsedNickname.data}`)
-        .digest("hex");
-      const bootstrap = await createBridgeBootstrap({
-        ...launchContext,
-        nickname: parsedNickname.data,
-        minecraftUuid: uuid,
-      });
+      const bootstrap = await createBridgeBootstrap(launchContext);
       bridgeBootstrapClose?.();
       bridgeBootstrapClose = bootstrap.close;
       const settings = await getLaunchSettings(serverId);
       const launchedAt = Date.now();
       const process = await launchMinecraftRuntime(manifest, runtime, {
-        nickname: parsedNickname.data,
-        uuid,
+        nickname: launchContext.nickname,
+        uuid: launchContext.minecraftUuid,
         memoryMb: settings.memoryMb,
         fullscreen: settings.fullscreen,
         bridgeBootstrap: bootstrap,
@@ -1700,7 +1685,7 @@ app.whenReady().then(async () => {
       runningGame = {
         pid: process.pid,
         serverId,
-        nickname: parsedNickname.data,
+        nickname: launchContext.nickname,
         launchedAt,
         // Use the same validated instance-path helper as install, removal
         // and launch. This keeps monitoring correct if storage layout changes.

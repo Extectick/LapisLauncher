@@ -582,6 +582,21 @@ describe.skipIf(process.env.RUN_DATABASE_TESTS !== "1")("auth API", () => {
       payload: { nickname: "TicketUser", password: "Abc123" },
     });
     const accessToken = registration.json().accessToken as string;
+    const launchContext = await app.inject({
+      method: "POST",
+      url: "/v1/servers/main/game-launch-context",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(launchContext.statusCode).toBe(201);
+    expect(launchContext.json()).toEqual(
+      expect.objectContaining({
+        nickname: "TicketUser",
+        minecraftUuid: createHash("md5")
+          .update("OfflinePlayer:TicketUser")
+          .digest("hex"),
+      }),
+    );
+
     const issued = await app.inject({
       method: "POST",
       url: "/v1/servers/main/game-ticket",
