@@ -582,6 +582,23 @@ describe.skipIf(process.env.RUN_DATABASE_TESTS !== "1")("auth API", () => {
       payload: { nickname: "TicketUser", password: "Abc123" },
     });
     const accessToken = registration.json().accessToken as string;
+    const userId = registration.json().user.id as string;
+    const textureUrl =
+      "https://textures.minecraft.net/texture/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const textureValue = Buffer.from(
+      JSON.stringify({ textures: { SKIN: { url: textureUrl } } }),
+      "utf8",
+    ).toString("base64");
+    const textureSignature = Buffer.alloc(96, 7).toString("base64");
+    await prisma.userSkin.create({
+      data: {
+        userId,
+        textureValue,
+        textureSignature,
+        textureUrl,
+        model: "default",
+      },
+    });
     const launchContext = await app.inject({
       method: "POST",
       url: "/v1/servers/main/game-launch-context",
@@ -612,7 +629,7 @@ describe.skipIf(process.env.RUN_DATABASE_TESTS !== "1")("auth API", () => {
     });
     expect(denied.statusCode).toBe(403);
 
-    const consumed = await app.inject({
+    const legacyConsumed = await app.inject({
       method: "POST",
       url: "/v1/game-tickets/consume",
       headers: {
@@ -620,9 +637,39 @@ describe.skipIf(process.env.RUN_DATABASE_TESTS !== "1")("auth API", () => {
       },
       payload: { ticket, serverId: "main" },
     });
+    expect(legacyConsumed.statusCode).toBe(200);
+    expect(legacyConsumed.json()).toEqual({ userId, nickname: "TicketUser" });
+
+    const signedIssued = await app.inject({
+      method: "POST",
+      url: "/v1/servers/main/game-ticket",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(signedIssued.statusCode).toBe(201);
+    const signedTicket = signedIssued.json().ticket as string;
+    const consumed = await app.inject({
+      method: "POST",
+      url: "/v1/game-tickets/consume",
+      headers: {
+        "x-lapis-bridge-key": "lapis-dev-bridge-key-change-in-production",
+        "x-lapis-bridge-capabilities": "signed-skin-v1",
+      },
+      payload: { ticket: signedTicket, serverId: "main" },
+    });
     expect(consumed.statusCode).toBe(200);
     expect(consumed.json()).toEqual(
-      expect.objectContaining({ nickname: "TicketUser" }),
+      expect.objectContaining({
+        nickname: "TicketUser",
+        minecraftUuid: createHash("md5")
+          .update("OfflinePlayer:TicketUser")
+          .digest("hex"),
+        skin: {
+          value: textureValue,
+          signature: textureSignature,
+          textureUrl,
+          model: "default",
+        },
+      }),
     );
 
     const reused = await app.inject({
@@ -631,7 +678,7 @@ describe.skipIf(process.env.RUN_DATABASE_TESTS !== "1")("auth API", () => {
       headers: {
         "x-lapis-bridge-key": "lapis-dev-bridge-key-change-in-production",
       },
-      payload: { ticket, serverId: "main" },
+      payload: { ticket: signedTicket, serverId: "main" },
     });
     expect(reused.statusCode).toBe(401);
   });

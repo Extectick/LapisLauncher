@@ -18,8 +18,22 @@ model User {
   roles         UserRole[]   @relation("UserRoleSubject")
   assignedRoles UserRole[]   @relation("UserRoleAssigner")
   auditEvents   AuditEvent[]
+  skin          UserSkin?
 
   @@map("users")
+}
+
+model UserSkin {
+  userId           String   @id @map("user_id") @db.Uuid
+  textureValue     String   @map("texture_value")
+  textureSignature String   @map("texture_signature")
+  textureUrl       String   @map("texture_url") @db.VarChar(255)
+  model            String   @db.VarChar(8)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_skins")
 }
 
 enum RoleScopeType {

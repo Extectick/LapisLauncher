@@ -13,13 +13,11 @@ import { SkinService } from "./skin.service";
 
 @Controller("v1/profile")
 export class ProfileController {
-  constructor(
-    @Inject(SkinService) private readonly skins: SkinService,
-  ) {}
+  constructor(@Inject(SkinService) private readonly skins: SkinService) {}
 
   @Get("skin")
   async skin(@CurrentUser() user: AccessUser): Promise<PlayerSkin> {
-    return this.skins.getSkin(user.nickname);
+    return this.skins.getSkin(user.nickname, user.id);
   }
 
   @Post("skin")

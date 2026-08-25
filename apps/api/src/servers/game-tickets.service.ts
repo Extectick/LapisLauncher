@@ -52,7 +52,11 @@ export class GameTicketsService {
   async consume(
     ticket: string,
     serverId: string,
-  ): Promise<{ userId: string; nickname: string }> {
+  ): Promise<{
+    userId: string;
+    nickname: string;
+    minecraftUuid: string;
+  }> {
     const result = await this.prisma.gameTicket.updateMany({
       where: {
         tokenHash: this.hash(ticket),
@@ -72,7 +76,13 @@ export class GameTicketsService {
     });
     if (!consumed)
       throw new UnauthorizedException("Игровой билет недействителен.");
-    return { userId: consumed.userId, nickname: consumed.user.nickname };
+    return {
+      userId: consumed.userId,
+      nickname: consumed.user.nickname,
+      minecraftUuid: createHash("md5")
+        .update(`OfflinePlayer:${consumed.user.nickname}`)
+        .digest("hex"),
+    };
   }
 
   private hash(ticket: string): string {

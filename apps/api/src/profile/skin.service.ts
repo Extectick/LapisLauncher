@@ -2,13 +2,20 @@ import {
   BadRequestException,
   HttpException,
   HttpStatus,
+  Inject,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { createHash } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { PlayerSkin } from "@lapis/contracts";
+import {
+  PlayerSkin,
+  SignedPlayerSkin,
+  signedPlayerSkinSchema,
+} from "@lapis/contracts";
+import { PrismaService } from "../prisma.service";
 
 const DEFAULT_SKIN: PlayerSkin = {
   textureUrl:
@@ -29,7 +36,9 @@ const MAX_SKIN_BYTES = 20 * 1024;
 const MIN_GENERATION_INTERVAL_MS = 3_000;
 const MAX_QUEUED_GENERATIONS = 5;
 
-type StoredSkin = { value?: { value?: string } };
+type StoredSkin = {
+  value?: { value?: string; signature?: string };
+};
 type TexturePayload = {
   textures?: { SKIN?: { url?: string; metadata?: { model?: string } } };
 };
@@ -80,6 +89,20 @@ function skinFromStoredValue(value: string | undefined): PlayerSkin | null {
   }
 }
 
+function signedSkinFromStoredValue(
+  value: string | undefined,
+  signature: string | undefined,
+): SignedPlayerSkin | null {
+  const skin = skinFromStoredValue(value);
+  if (!skin || !value || !signature) return null;
+  const parsed = signedPlayerSkinSchema.safeParse({
+    ...skin,
+    value,
+    signature,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
 function parseMinecraftSkin(pngBase64: string): Buffer {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(pngBase64) || pngBase64.length % 4 !== 0)
     throw new BadRequestException("Файл скина повреждён.");
@@ -99,24 +122,131 @@ function parseMinecraftSkin(pngBase64: string): Buffer {
 
 @Injectable()
 export class SkinService {
+  private readonly logger = new Logger(SkinService.name);
   private readonly lastUploadByUser = new Map<string, number>();
   private queueDepth = 0;
   private nextGenerationAt = 0;
   private queueTail: Promise<void> = Promise.resolve();
 
-  async getSkin(nickname: string): Promise<PlayerSkin> {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  async getSkin(nickname: string, userId?: string): Promise<PlayerSkin> {
+    const stored = userId
+      ? await this.getSignedSkin(userId, nickname)
+      : await this.getSignedSkinByNickname(nickname);
+    return stored
+      ? { textureUrl: stored.textureUrl, model: stored.model }
+      : DEFAULT_SKIN;
+  }
+
+  async getSignedSkin(
+    userId: string,
+    nickname: string,
+  ): Promise<SignedPlayerSkin | null> {
+    const stored = await this.prisma.userSkin.findUnique({
+      where: { userId },
+      select: {
+        textureValue: true,
+        textureSignature: true,
+        textureUrl: true,
+        model: true,
+      },
+    });
+    if (stored) {
+      const parsed = signedPlayerSkinSchema.safeParse({
+        value: stored.textureValue,
+        signature: stored.textureSignature,
+        textureUrl: stored.textureUrl,
+        model: stored.model,
+      });
+      if (parsed.success) return parsed.data;
+      this.logger.error(`Stored skin is invalid for user ${userId}.`);
+    }
+
+    const legacy = await this.readLegacySkin(nickname);
+    if (!legacy) return null;
+    await this.saveDatabaseSkin(userId, legacy).catch((error: unknown) => {
+      this.logger.warn(
+        `Could not migrate the legacy skin for user ${userId}: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+    });
+    return legacy;
+  }
+
+  private async getSignedSkinByNickname(
+    nickname: string,
+  ): Promise<SignedPlayerSkin | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { nicknameFold: nickname.toLocaleLowerCase("en-US") },
+      select: { id: true, nickname: true },
+    });
+    return user
+      ? this.getSignedSkin(user.id, user.nickname)
+      : this.readLegacySkin(nickname);
+  }
+
+  private async readLegacySkin(
+    nickname: string,
+  ): Promise<SignedPlayerSkin | null> {
     try {
       const raw = await readFile(
         join(SKIN_RESTORER_DIRECTORY, `${offlinePlayerUuid(nickname)}.json`),
         "utf8",
       );
-      return (
-        skinFromStoredValue((JSON.parse(raw) as StoredSkin).value?.value) ??
-        DEFAULT_SKIN
-      );
+      const value = (JSON.parse(raw) as StoredSkin).value;
+      return signedSkinFromStoredValue(value?.value, value?.signature);
     } catch {
-      return DEFAULT_SKIN;
+      return null;
     }
+  }
+
+  private saveDatabaseSkin(
+    userId: string,
+    skin: SignedPlayerSkin,
+  ): Promise<unknown> {
+    return this.prisma.userSkin.upsert({
+      where: { userId },
+      create: {
+        userId,
+        textureValue: skin.value,
+        textureSignature: skin.signature,
+        textureUrl: skin.textureUrl,
+        model: skin.model,
+      },
+      update: {
+        textureValue: skin.value,
+        textureSignature: skin.signature,
+        textureUrl: skin.textureUrl,
+        model: skin.model,
+      },
+    });
+  }
+
+  private async saveUploadedSkin(
+    userId: string,
+    nickname: string,
+    skin: SignedPlayerSkin,
+  ): Promise<void> {
+    await this.saveDatabaseSkin(userId, skin);
+    await this.storeSkin(nickname, skin.value, skin.signature).catch(
+      (error: unknown) => {
+        this.logger.warn(
+          `Could not write the compatibility skin file for user ${userId}: ${error instanceof Error ? error.message : "unknown error"}`,
+        );
+      },
+    );
+  }
+
+  private parseGeneratedSkin(
+    value: string,
+    signature: string,
+  ): SignedPlayerSkin {
+    const skin = signedSkinFromStoredValue(value, signature);
+    if (!skin)
+      throw new ServiceUnavailableException(
+        "MineSkin вернул некорректную текстуру.",
+      );
+    return skin;
   }
 
   async uploadSkin(
@@ -151,8 +281,12 @@ export class SkinService {
         await new Promise<void>((resolve) => setTimeout(resolve, wait));
       const generated = await this.generateWithMineSkin(png, nickname);
       this.nextGenerationAt = Date.now() + MIN_GENERATION_INTERVAL_MS;
-      await this.storeSkin(nickname, generated.value, generated.signature);
-      return skinFromStoredValue(generated.value) ?? DEFAULT_SKIN;
+      const skin = this.parseGeneratedSkin(
+        generated.value,
+        generated.signature,
+      );
+      await this.saveUploadedSkin(userId, nickname, skin);
+      return { textureUrl: skin.textureUrl, model: skin.model };
     } finally {
       this.queueDepth -= 1;
       release();
@@ -220,6 +354,7 @@ export class SkinService {
     value: string,
     signature: string,
   ): Promise<void> {
+    await mkdir(SKIN_RESTORER_DIRECTORY, { recursive: true });
     const path = join(
       SKIN_RESTORER_DIRECTORY,
       `${offlinePlayerUuid(nickname)}.json`,

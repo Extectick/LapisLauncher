@@ -206,6 +206,20 @@ export const playerSkinSchema = z.object({
 });
 export type PlayerSkin = z.infer<typeof playerSkinSchema>;
 
+export const signedPlayerSkinSchema = playerSkinSchema.extend({
+  value: z
+    .string()
+    .min(64)
+    .max(8192)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  signature: z
+    .string()
+    .min(64)
+    .max(2048)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
+export type SignedPlayerSkin = z.infer<typeof signedPlayerSkinSchema>;
+
 export const serverPlayerSchema = z.object({
   nickname: nicknameSchema,
   skin: playerSkinSchema,
@@ -271,7 +285,21 @@ export const consumeGameTicketSchema = z.object({
   ticket: z.string().min(32),
   serverId: z.string().regex(/^[A-Za-z0-9_-]{1,32}$/),
 });
-export type ConsumedGameTicket = { userId: string; nickname: string };
+export const consumedGameTicketSchema = z.object({
+  userId: z.string().uuid(),
+  nickname: nicknameSchema,
+});
+export type ConsumedGameTicket = z.infer<typeof consumedGameTicketSchema>;
+
+export const consumedGameTicketWithSkinSchema = consumedGameTicketSchema.extend(
+  {
+    minecraftUuid: z.string().regex(/^[a-f0-9]{32}$/),
+    skin: signedPlayerSkinSchema.nullable(),
+  },
+);
+export type ConsumedGameTicketWithSkin = z.infer<
+  typeof consumedGameTicketWithSkinSchema
+>;
 
 export function canonicalInstallManifest(
   manifest: GameInstallManifest,

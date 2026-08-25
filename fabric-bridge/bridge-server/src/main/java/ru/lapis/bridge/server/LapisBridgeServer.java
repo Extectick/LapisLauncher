@@ -14,9 +14,11 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import io.netty.buffer.Unpooled;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.networking.v1.ServerLoginConnectionEvents;
@@ -33,7 +35,9 @@ import ru.lapis.bridge.Protocol;
 public final class LapisBridgeServer implements ModInitializer {
   private static final Logger LOGGER = LoggerFactory.getLogger("lapis-bridge");
   private static final SecureRandom RANDOM = new SecureRandom();
-  private static final Pattern TICKET_NICKNAME = Pattern.compile("\\\"nickname\\\"\\s*:\\s*\\\"([A-Za-z0-9_]{3,16})\\\"");
+  private static final Pattern NICKNAME = Pattern.compile("[A-Za-z0-9_]{3,16}");
+  private static final Pattern BASE64 = Pattern.compile("[A-Za-z0-9+/]+={0,2}");
+  private static final Pattern TEXTURE_URL = Pattern.compile("https://textures\\.minecraft\\.net/texture/[a-f0-9]{64}", Pattern.CASE_INSENSITIVE);
   private final Map<ServerLoginPacketListenerImpl, byte[]> challenges = new ConcurrentHashMap<>();
   private BridgeConfig config;
 
@@ -69,6 +73,10 @@ public final class LapisBridgeServer implements ModInitializer {
       synchronizer.waitFor(CompletableFuture.supplyAsync(() -> verify(listener, challenge, response))
           .thenCompose(result -> {
             if (result.accepted) {
+              if (!SkinRestorerIntegration.apply(
+                  offlinePlayerUuid(response.nickname()), response.nickname(), result.skin)) {
+                LOGGER.warn("Lapis login will continue without a synchronized skin for '{}'.", listener.getUserName());
+              }
               LOGGER.info("Lapis login verification succeeded for '{}'.", listener.getUserName());
               return CompletableFuture.completedFuture(null);
             }
@@ -84,18 +92,29 @@ public final class LapisBridgeServer implements ModInitializer {
     if (config.sharedKey == null || response.protocolVersion() != Protocol.VERSION || !config.buildId.equals(response.buildId())) return Verification.denied("Версия Lapis Launcher устарела.");
     String echoed = Base64.getUrlEncoder().withoutPadding().encodeToString(challenge);
     if (!echoed.equals(response.echoedChallenge()) || !requestedNickname(listener).equals(response.nickname())) return Verification.denied("Авторизация Lapis не пройдена.");
-    String expectedUuid = offlineUuid(response.nickname());
+    String expectedUuid = ticketMinecraftUuid(response.nickname());
     if (!expectedUuid.equalsIgnoreCase(response.minecraftUuid())) return Verification.denied("Профиль игрока не совпадает.");
     try {
       String body = "{\"ticket\":\"" + json(response.ticket()) + "\",\"serverId\":\"" + json(config.serverId) + "\"}";
       HttpRequest request = HttpRequest.newBuilder(URI.create(config.apiUrl + "/v1/game-tickets/consume"))
-          .timeout(Duration.ofSeconds(5)).header("content-type", "application/json").header("X-Lapis-Bridge-Key", config.sharedKey)
+          .timeout(Duration.ofSeconds(5))
+          .header("content-type", "application/json")
+          .header("X-Lapis-Bridge-Key", config.sharedKey)
+          .header("X-Lapis-Bridge-Capabilities", "signed-skin-v1")
           .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
       HttpResponse<String> result = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-      if (result.statusCode() != 200 || result.body().length() > 512) return Verification.denied("Игровой билет недействителен или истёк.");
-      Matcher nickname = TICKET_NICKNAME.matcher(result.body());
-      if (!nickname.find() || !response.nickname().equals(nickname.group(1))) return Verification.denied("Игровой билет выдан другому профилю.");
-      return Verification.allowed();
+      if (result.statusCode() != 200 || result.body().length() > 16_384) return Verification.denied("Игровой билет недействителен или истёк.");
+      JsonObject payload = JsonParser.parseString(result.body()).getAsJsonObject();
+      String nickname = requiredString(payload, "nickname");
+      if (!NICKNAME.matcher(nickname).matches()
+          || !response.nickname().equals(nickname))
+        return Verification.denied("Игровой билет выдан другому профилю.");
+      JsonElement minecraftUuid = payload.get("minecraftUuid");
+      if (minecraftUuid != null
+          && (!minecraftUuid.isJsonPrimitive()
+              || !response.minecraftUuid().equalsIgnoreCase(minecraftUuid.getAsString())))
+        return Verification.denied("Игровой билет выдан другому профилю.");
+      return Verification.allowed(parseSkin(payload.get("skin")));
     } catch (Exception error) {
       return Verification.denied("Сервис авторизации Lapis недоступен.");
     }
@@ -108,16 +127,38 @@ public final class LapisBridgeServer implements ModInitializer {
     int addressStart = displayName.indexOf(" (");
     return addressStart < 0 ? displayName : displayName.substring(0, addressStart);
   }
-  private static String offlineUuid(String nickname) {
+  private static String ticketMinecraftUuid(String nickname) {
     try {
       return HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(("OfflinePlayer:" + nickname).getBytes(StandardCharsets.UTF_8)));
     } catch (Exception error) {
       throw new IllegalStateException("Could not calculate offline UUID", error);
     }
   }
-  private record Verification(boolean accepted, String message) {
-    static Verification allowed() { return new Verification(true, ""); }
-    static Verification denied(String message) { return new Verification(false, message); }
+  private static UUID offlinePlayerUuid(String nickname) {
+    return UUID.nameUUIDFromBytes(("OfflinePlayer:" + nickname).getBytes(StandardCharsets.UTF_8));
+  }
+  private static String requiredString(JsonObject payload, String field) {
+    JsonElement value = payload.get(field);
+    if (value == null || !value.isJsonPrimitive()) throw new IllegalArgumentException("Missing field: " + field);
+    return value.getAsString();
+  }
+  private static LapisSkin parseSkin(JsonElement element) {
+    if (element == null || element.isJsonNull()) return null;
+    JsonObject skin = element.getAsJsonObject();
+    String value = requiredString(skin, "value");
+    String signature = requiredString(skin, "signature");
+    String textureUrl = requiredString(skin, "textureUrl");
+    String model = requiredString(skin, "model");
+    if (value.length() < 64 || value.length() > 8192 || !BASE64.matcher(value).matches()
+        || signature.length() < 64 || signature.length() > 2048 || !BASE64.matcher(signature).matches()
+        || !TEXTURE_URL.matcher(textureUrl).matches()
+        || !("default".equals(model) || "slim".equals(model)))
+      throw new IllegalArgumentException("Invalid signed skin payload");
+    return new LapisSkin(value, signature, textureUrl, model);
+  }
+  private record Verification(boolean accepted, String message, LapisSkin skin) {
+    static Verification allowed(LapisSkin skin) { return new Verification(true, "", skin); }
+    static Verification denied(String message) { return new Verification(false, message, null); }
   }
   private record BridgeConfig(String apiUrl, String serverId, String buildId, String sharedKey) {
     static BridgeConfig fromEnvironment() {
