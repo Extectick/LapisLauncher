@@ -14,6 +14,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import io.netty.buffer.Unpooled;
 import net.fabricmc.api.ModInitializer;
@@ -31,6 +33,7 @@ import ru.lapis.bridge.Protocol;
 public final class LapisBridgeServer implements ModInitializer {
   private static final Logger LOGGER = LoggerFactory.getLogger("lapis-bridge");
   private static final SecureRandom RANDOM = new SecureRandom();
+  private static final Pattern TICKET_NICKNAME = Pattern.compile("\\\"nickname\\\"\\s*:\\s*\\\"([A-Za-z0-9_]{3,16})\\\"");
   private final Map<ServerLoginPacketListenerImpl, byte[]> challenges = new ConcurrentHashMap<>();
   private BridgeConfig config;
 
@@ -84,8 +87,11 @@ public final class LapisBridgeServer implements ModInitializer {
       HttpRequest request = HttpRequest.newBuilder(URI.create(config.apiUrl + "/v1/game-tickets/consume"))
           .timeout(Duration.ofSeconds(5)).header("content-type", "application/json").header("X-Lapis-Bridge-Key", config.sharedKey)
           .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
-      HttpResponse<Void> result = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build().send(request, HttpResponse.BodyHandlers.discarding());
-      return result.statusCode() == 200 ? Verification.allowed() : Verification.denied("Игровой билет недействителен или истёк.");
+      HttpResponse<String> result = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+      if (result.statusCode() != 200 || result.body().length() > 512) return Verification.denied("Игровой билет недействителен или истёк.");
+      Matcher nickname = TICKET_NICKNAME.matcher(result.body());
+      if (!nickname.find() || !response.nickname().equals(nickname.group(1))) return Verification.denied("Игровой билет выдан другому профилю.");
+      return Verification.allowed();
     } catch (Exception error) {
       return Verification.denied("Сервис авторизации Lapis недоступен.");
     }

@@ -2,6 +2,8 @@
 
 Lapis — Electron launcher для Fabric-сборок Minecraft с локальным API, защищённой сессией, подписанными манифестами, загрузкой скинов и Fabric Bridge для авторизации на сервере. Актуальный статус и дальнейший план — в [docs/implementation-plan.md](docs/implementation-plan.md).
 
+Установка и настройка серверного мода описаны в [docs/fabric-bridge-server.md](docs/fabric-bridge-server.md).
+
 ## Локальный запуск
 
 Требуются Node.js 22+, pnpm 10+ и Docker Desktop.

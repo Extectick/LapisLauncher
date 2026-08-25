@@ -82,7 +82,6 @@ import {
   shutdownUpdater,
 } from "./updater";
 import type { AppUpdateStatus } from "../shared/update-types";
-import { nicknameServerTarget } from "./server-policy";
 
 // Velopack lifecycle hooks must be registered before the rest of the Electron
 // application starts. Pending updates are applied explicitly after the
@@ -858,27 +857,6 @@ async function refreshedLaunchContext(
       "Сервер авторизации недоступен. Сессия сохранена — повторите позже.",
     );
   }
-}
-
-function nicknameLaunchContext(
-  serverId: string,
-  buildId: string,
-): GameLaunchContext | null {
-  const target = nicknameServerTarget(serverId);
-  if (!target) return null;
-  return gameLaunchContextSchema.parse({
-    serverId,
-    host: target.host,
-    port: target.port,
-    buildId,
-    bridgeProtocolVersion: 1,
-    // The existing client bridge expects a one-time opaque value in its local
-    // bootstrap payload. Nickname-mode servers never send the Lapis auth
-    // challenge, so this value stays on the user's computer and is not an API
-    // credential or a server authorization ticket.
-    ticket: randomBytes(32).toString("base64url"),
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-  });
 }
 
 function processIsRunning(pid: number): boolean {
@@ -1696,9 +1674,7 @@ app.whenReady().then(async () => {
       const runtime = await ensureMinecraftRuntime(manifest, (event) =>
         reportInstallProgress(serverId, event),
       );
-      const launchContext =
-        nicknameLaunchContext(serverId, manifest.id) ??
-        (await refreshedLaunchContext(serverId));
+      const launchContext = await refreshedLaunchContext(serverId);
       if (launchContext.buildId !== manifest.id)
         throw new ApiError("Состав сборки изменился. Повторите запуск.");
       const uuid = createHash("md5")
