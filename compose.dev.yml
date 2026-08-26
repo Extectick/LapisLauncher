@@ -31,6 +31,20 @@ services:
     volumes:
       - lapis_postgres_test_data:/var/lib/postgresql/data
 
+  worker:
+    image: lapis-worker:dev
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      DATABASE_URL: postgresql://lapis:lapis@postgres:5432/lapis?schema=public
+      LAPIS_SERVER_PING_INTERVAL_MS: 30000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   lapis_postgres_data:
   lapis_postgres_test_data:

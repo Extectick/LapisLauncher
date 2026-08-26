@@ -65,6 +65,20 @@ type InstallProgress = {
   total?: number;
   fileName?: string;
 };
+type CustomClientMod = {
+  id: string;
+  fileName: string;
+  name: string;
+  version: string | null;
+  size: number;
+  sha1: string;
+  enabled: boolean;
+  addedAt: string;
+};
+type AddCustomClientModsResult = {
+  added: CustomClientMod[];
+  rejected: Array<{ fileName: string; message: string }>;
+};
 declare global {
   interface Window {
     lapis: {
@@ -121,6 +135,19 @@ declare global {
         onStatus(callback: (status: AppUpdateStatus) => void): () => void;
       };
       runtime: {
+        customMods(buildId: string): Promise<IpcResult<CustomClientMod[]>>;
+        addCustomMod(
+          serverId: string,
+        ): Promise<IpcResult<AddCustomClientModsResult>>;
+        toggleCustomMod(
+          serverId: string,
+          modId: string,
+          enabled: boolean,
+        ): Promise<IpcResult<CustomClientMod>>;
+        deleteCustomMods(
+          serverId: string,
+          ids: string[],
+        ): Promise<IpcResult<string[]>>;
         javaStatus(): Promise<IpcResult<{ major: number; installed: boolean }>>;
         ensureJava(): Promise<IpcResult<{ major: number; installed: boolean }>>;
         ensureGame(serverId: string): Promise<

@@ -12,7 +12,15 @@ async function readManagedFiles(modsDirectory: string): Promise<string[]> {
       value !== null &&
       "files" in value &&
       Array.isArray(value.files)
-        ? value.files.filter(
+        ? [
+            ...value.files,
+            ...(typeof value === "object" &&
+            value !== null &&
+            "customFiles" in value &&
+            Array.isArray(value.customFiles)
+              ? value.customFiles
+              : []),
+          ].filter(
             (fileName): fileName is string =>
               typeof fileName === "string" && MOD_FILE_PATTERN.test(fileName),
           )
@@ -38,9 +46,10 @@ function normalizedFiles(files: string[]): string[] {
 export async function reconcileManagedMods(
   modsDirectory: string,
   expectedFiles: string[],
+  customFiles: string[] = [],
 ): Promise<void> {
   const next = new Set(
-    expectedFiles
+    [...expectedFiles, ...customFiles]
       .filter((fileName) => MOD_FILE_PATTERN.test(fileName))
       .map((fileName) => fileName.toLowerCase()),
   );
@@ -55,9 +64,10 @@ export async function reconcileManagedMods(
   await writeFile(
     temporaryPath,
     JSON.stringify({
-      version: 2,
+      version: 3,
       strict: true,
       files: [...expectedFiles].sort(),
+      customFiles: [...customFiles].sort(),
     }),
   );
   await rename(temporaryPath, managedPath);
@@ -66,12 +76,13 @@ export async function reconcileManagedMods(
 export async function managedModsMatch(
   modsDirectory: string,
   expectedFiles: string[],
+  customFiles: string[] = [],
 ): Promise<boolean> {
   const managedFiles = normalizedFiles(await readManagedFiles(modsDirectory));
   const installedFiles = normalizedFiles(
     await listInstalledJars(modsDirectory),
   );
-  const expected = normalizedFiles(expectedFiles);
+  const expected = normalizedFiles([...expectedFiles, ...customFiles]);
   return (
     managedFiles.length === expected.length &&
     managedFiles.every((fileName, index) => fileName === expected[index]) &&

@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "scripts": {
-    "dev:api": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/api dev",
+    "dev:api": "pnpm --filter @lapis/contracts build && pnpm --parallel --filter @lapis/api --filter @lapis/worker dev",
     "dev:launcher": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/minecraft-core build && pnpm --filter @lapis/launcher dev",
     "package:win": "pnpm --filter @lapis/contracts build && pnpm --filter @lapis/minecraft-core build && pnpm --filter @lapis/launcher package:win",
     "package:win:dev-signed": "pwsh -NoProfile -File apps/launcher/scripts/package-dev-signed.ps1",

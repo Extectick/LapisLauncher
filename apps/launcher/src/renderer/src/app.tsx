@@ -40,6 +40,16 @@ type BuildStatus = "missing" | "update" | "ready";
 type PlayerSkin = { textureUrl: string; model: "default" | "slim" };
 type ServerMod = { fileName: string; required: boolean };
 type ServerPlayer = { nickname: string; skin: PlayerSkin };
+type CustomClientMod = {
+  id: string;
+  fileName: string;
+  name: string;
+  version: string | null;
+  size: number;
+  sha1: string;
+  enabled: boolean;
+  addedAt: string;
+};
 type InstallProgress = {
   serverId: string;
   progress: number;
@@ -987,6 +997,7 @@ function AuthScreen({
 function Dashboard({
   session,
   servers,
+  customModCounts,
   catalogError,
   buildStatuses,
   installProgress,
@@ -1012,6 +1023,7 @@ function Dashboard({
 }: {
   session: Session;
   servers: ServerCatalogItem[];
+  customModCounts: Record<string, number>;
   catalogError: string;
   buildStatuses: Record<string, BuildStatus>;
   installProgress: InstallProgress | null;
@@ -1208,6 +1220,17 @@ function Dashboard({
                         <FontAwesomeIcon icon={faGear} aria-hidden="true" />
                         Настройки
                       </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => runMenuAction(onMods, server)}
+                      >
+                        <FontAwesomeIcon
+                          icon={faPuzzlePiece}
+                          aria-hidden="true"
+                        />
+                        Моды
+                      </button>
                       {status !== "missing" && (
                         <button
                           className="danger"
@@ -1235,7 +1258,9 @@ function Dashboard({
                       type="button"
                       onClick={() => onMods(server)}
                     >
-                      моды {server.build.modCount}
+                      моды{" "}
+                      {server.build.modCount +
+                        (customModCounts[server.id] ?? 0)}
                     </button>
                   </p>
                   {activeProgress !== null && installProgress && (
@@ -1681,6 +1706,262 @@ function AdminModsDialog({
   );
 }
 
+function UserModsDialog({
+  server,
+  locked,
+  onEnabledCountChange,
+  onClose,
+}: {
+  server: ServerCatalogItem;
+  locked: boolean;
+  onEnabledCountChange: (count: number) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const [bundledMods, setBundledMods] = useState<ServerMod[]>([]);
+  const [customMods, setCustomMods] = useState<CustomClientMod[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      window.lapis.catalog.mods(server.id),
+      window.lapis.runtime.customMods(server.build.id),
+    ]).then(([bundled, custom]) => {
+      if (!active) return;
+      if (bundled.ok) setBundledMods(bundled.data);
+      else setError(bundled.error.message);
+      if (custom.ok) {
+        setCustomMods(custom.data);
+        onEnabledCountChange(custom.data.filter((mod) => mod.enabled).length);
+      } else setError(custom.error.message);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [server.build.id, server.id]);
+
+  function toggleSelected(modId: string): void {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(modId)) next.delete(modId);
+      else next.add(modId);
+      return next;
+    });
+  }
+
+  async function addMod(): Promise<void> {
+    if (adding || locked) return;
+    setAdding(true);
+    setError("");
+    const result = await window.lapis.runtime.addCustomMod(server.id);
+    if (!result.ok) setError(result.error.message);
+    else {
+      const added = [...result.data.added].reverse();
+      if (added.length > 0) {
+        const addedIds = new Set(added.map((mod) => mod.id));
+        setCustomMods((current) => [
+          ...added,
+          ...current.filter((mod) => !addedIds.has(mod.id)),
+        ]);
+      }
+      if (result.data.rejected.length > 0) {
+        const first = result.data.rejected[0]!;
+        setError(
+          result.data.rejected.length === 1
+            ? `${first.fileName}: ${first.message}`
+            : `Не добавлено модов: ${result.data.rejected.length}. ${first.fileName}: ${first.message}`,
+        );
+      }
+    }
+    setAdding(false);
+  }
+
+  async function toggleMod(mod: CustomClientMod): Promise<void> {
+    if (togglingId || locked) return;
+    setTogglingId(mod.id);
+    setError("");
+    const result = await window.lapis.runtime.toggleCustomMod(
+      server.id,
+      mod.id,
+      !mod.enabled,
+    );
+    if (!result.ok) setError(result.error.message);
+    else {
+      const next = customMods.map((item) =>
+        item.id === result.data.id ? result.data : item,
+      );
+      setCustomMods(next);
+      onEnabledCountChange(next.filter((item) => item.enabled).length);
+    }
+    setTogglingId(null);
+  }
+
+  async function deleteSelected(): Promise<boolean> {
+    if (locked) return false;
+    setError("");
+    const result = await window.lapis.runtime.deleteCustomMods(server.id, [
+      ...selected,
+    ]);
+    if (!result.ok) {
+      setError(result.error.message);
+      return false;
+    }
+    const removed = new Set(result.data);
+    const next = customMods.filter((mod) => !removed.has(mod.id));
+    setCustomMods(next);
+    onEnabledCountChange(next.filter((mod) => mod.enabled).length);
+    setSelected(new Set());
+    setConfirmingDelete(false);
+    return true;
+  }
+
+  const allSelected =
+    customMods.length > 0 && selected.size === customMods.length;
+  const requiredMods = bundledMods.filter((mod) => mod.required);
+  return (
+    <>
+      <Modal
+        title="Моды"
+        className="admin-server-dialog admin-mods-dialog user-mods-dialog"
+        onClose={onClose}
+      >
+        <section className="admin-client-mods user-client-mods">
+          {locked && (
+            <p className="custom-mods-locked" role="status">
+              Остановите Minecraft, чтобы изменить моды.
+            </p>
+          )}
+          {error && (
+            <p className="admin-form-error" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="admin-mods-toolbar user-mods-toolbar">
+            {customMods.length > 1 && (
+              <label className="admin-mods-select-all">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() =>
+                    setSelected(
+                      allSelected
+                        ? new Set()
+                        : new Set(customMods.map((mod) => mod.id)),
+                    )
+                  }
+                />
+                <span>
+                  {selected.size > 0
+                    ? `Выбрано: ${selected.size}`
+                    : "Выбрать все"}
+                </span>
+              </label>
+            )}
+            <div className="admin-mods-commands">
+              {selected.size > 0 && (
+                <button
+                  className="admin-mod-command danger"
+                  type="button"
+                  disabled={locked}
+                  onClick={() => setConfirmingDelete(true)}
+                >
+                  <FontAwesomeIcon icon={faTrash} aria-hidden="true" />
+                  Удалить
+                </button>
+              )}
+              <button
+                className="admin-mod-command"
+                type="button"
+                disabled={adding || locked}
+                onClick={() => void addMod()}
+              >
+                {adding ? (
+                  <Spinner />
+                ) : (
+                  <FontAwesomeIcon icon={faPlus} aria-hidden="true" />
+                )}
+                Добавить моды
+              </button>
+            </div>
+          </div>
+          {loading ? (
+            <div className="admin-mods-loading">
+              <Spinner />
+            </div>
+          ) : customMods.length === 0 ? (
+            <p className="admin-mods-empty user-mods-empty">
+              Моды не добавлены
+            </p>
+          ) : (
+            <ul>
+              {customMods.map((mod) => (
+                <li
+                  key={mod.id}
+                  className={`${mod.enabled ? "enabled" : "disabled"} ${selected.has(mod.id) ? "selected" : ""}`}
+                >
+                  <input
+                    className="admin-mod-select"
+                    type="checkbox"
+                    checked={selected.has(mod.id)}
+                    aria-label={`Выбрать ${mod.name}`}
+                    onChange={() => toggleSelected(mod.id)}
+                  />
+                  <div className="admin-mod-details">
+                    <strong title={mod.name}>{mod.name}</strong>
+                    <span>
+                      {formatAdminModSize(mod.size)}
+                      {mod.version ? ` · версия ${mod.version}` : ""}
+                    </span>
+                  </div>
+                  <button
+                    className={`admin-mod-toggle ${mod.enabled ? "is-on" : ""}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={mod.enabled}
+                    aria-label={`${mod.enabled ? "Выключить" : "Включить"} ${mod.name}`}
+                    disabled={togglingId !== null || locked}
+                    onClick={() => void toggleMod(mod)}
+                  >
+                    {togglingId === mod.id ? <Spinner /> : <span />}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {requiredMods.length > 0 && (
+            <details className="required-mods-details">
+              <summary>Обязательные моды · {requiredMods.length}</summary>
+              <ul className="required-mods-list">
+                {requiredMods.map((mod) => (
+                  <li key={mod.fileName}>
+                    {mod.fileName.replace(/\.jar$/i, "")}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </section>
+      </Modal>
+      {confirmingDelete && (
+        <ConfirmationDialog
+          title="Удалить пользовательские моды?"
+          message={`${selected.size} ${selected.size === 1 ? "локальный мод будет удалён" : "локальных модов будут удалены"} с этого компьютера.`}
+          confirm="Удалить"
+          danger
+          onClose={() => setConfirmingDelete(false)}
+          onConfirm={deleteSelected}
+        />
+      )}
+    </>
+  );
+}
+
 function AdminScreen({
   servers,
   onBack,
@@ -1817,6 +2098,9 @@ export function App(): JSX.Element {
   const [notice, setNotice] = useState<Notice>(null);
   const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [servers, setServers] = useState<ServerCatalogItem[]>([]);
+  const [customModCounts, setCustomModCounts] = useState<
+    Record<string, number>
+  >({});
   const [buildStatuses, setBuildStatuses] = useState<
     Record<string, BuildStatus>
   >({});
@@ -1839,6 +2123,8 @@ export function App(): JSX.Element {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [serverListDialog, setServerListDialog] =
     useState<ServerListState | null>(null);
+  const [customModsServer, setCustomModsServer] =
+    useState<ServerCatalogItem | null>(null);
   const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
     currentVersion: "",
     phase: "checking",
@@ -1878,22 +2164,71 @@ export function App(): JSX.Element {
         return;
       }
       setServers(result.data);
-      const statuses = await Promise.all(
+      const runtimeStates = await Promise.all(
         result.data.map(async (server) => ({
           id: server.id,
-          result: await window.lapis.runtime.buildStatus(server.id),
+          status: await window.lapis.runtime.buildStatus(server.id),
+          customMods: await window.lapis.runtime.customMods(server.build.id),
         })),
       );
       setBuildStatuses(
         Object.fromEntries(
-          statuses.map(({ id, result }) => [
+          runtimeStates.map(({ id, status }) => [
             id,
-            result.ok ? result.data : "missing",
+            status.ok ? status.data : "missing",
+          ]),
+        ),
+      );
+      setCustomModCounts(
+        Object.fromEntries(
+          runtimeStates.map(({ id, customMods }) => [
+            id,
+            customMods.ok
+              ? customMods.data.filter((mod) => mod.enabled).length
+              : 0,
           ]),
         ),
       );
     });
   }, [session?.user.id]);
+  useEffect(() => {
+    if (!session || page !== "servers") return;
+    let disposed = false;
+    let refreshing = false;
+    let timer: number | undefined;
+
+    const scheduleNextRefresh = (): void => {
+      if (disposed) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => void refreshCatalog(), 30_000);
+    };
+    const refreshCatalog = async (): Promise<void> => {
+      if (disposed) return;
+      if (document.visibilityState !== "visible" || refreshing) {
+        scheduleNextRefresh();
+        return;
+      }
+      refreshing = true;
+      try {
+        const result = await window.lapis.catalog.list();
+        if (!disposed && result.ok) setServers(result.data);
+      } finally {
+        refreshing = false;
+        scheduleNextRefresh();
+      }
+    };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") void refreshCatalog();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    scheduleNextRefresh();
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [page, session?.user.id]);
   useEffect(() => {
     if (!session) {
       setPlayerSkin(null);
@@ -2152,17 +2487,28 @@ export function App(): JSX.Element {
     setAdminServers(adminResult.data);
     if (!catalogResult.ok) return;
     setServers(catalogResult.data);
-    const statuses = await Promise.all(
+    const runtimeStates = await Promise.all(
       catalogResult.data.map(async (server) => ({
         id: server.id,
-        result: await window.lapis.runtime.buildStatus(server.id),
+        status: await window.lapis.runtime.buildStatus(server.id),
+        customMods: await window.lapis.runtime.customMods(server.build.id),
       })),
     );
     setBuildStatuses(
       Object.fromEntries(
-        statuses.map(({ id, result }) => [
+        runtimeStates.map(({ id, status }) => [
           id,
-          result.ok ? result.data : "missing",
+          status.ok ? status.data : "missing",
+        ]),
+      ),
+    );
+    setCustomModCounts(
+      Object.fromEntries(
+        runtimeStates.map(({ id, customMods }) => [
+          id,
+          customMods.ok
+            ? customMods.data.filter((mod) => mod.enabled).length
+            : 0,
         ]),
       ),
     );
@@ -2224,6 +2570,7 @@ export function App(): JSX.Element {
       <Dashboard
         session={session}
         servers={servers}
+        customModCounts={customModCounts}
         catalogError={catalogError}
         buildStatuses={buildStatuses}
         installProgress={installProgress}
@@ -2241,7 +2588,7 @@ export function App(): JSX.Element {
           setConfirmationRequest({ kind: "delete", server })
         }
         onSettings={(server) => void openBuildSettings(server)}
-        onMods={(server) => void openServerList("mods", server)}
+        onMods={(server) => setCustomModsServer(server)}
         onPlayers={(server) => void openServerList("players", server)}
         updateStatus={updateStatus}
         onOpenUpdate={() => setUpdateDialogOpen(true)}
@@ -2302,6 +2649,20 @@ export function App(): JSX.Element {
           players={serverListDialog.players}
           expectedPlayers={serverListDialog.server.onlinePlayers ?? 0}
           onClose={() => setServerListDialog(null)}
+        />
+      )}
+      {customModsServer && (
+        <UserModsDialog
+          key={customModsServer.id}
+          server={customModsServer}
+          locked={runningGame?.serverId === customModsServer.id}
+          onEnabledCountChange={(count) =>
+            setCustomModCounts((current) => ({
+              ...current,
+              [customModsServer.id]: count,
+            }))
+          }
+          onClose={() => setCustomModsServer(null)}
         />
       )}
       {notice && (

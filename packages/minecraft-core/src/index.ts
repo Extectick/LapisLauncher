@@ -23,7 +23,21 @@ import { installVersion } from "@xmcl/installer";
 import { launch } from "@xmcl/core";
 import { Agent, fetch as undiciFetch } from "undici";
 import { createHash } from "node:crypto";
-import { managedModsMatch, reconcileManagedMods } from "./managed-mods";
+import { managedModsMatch } from "./managed-mods";
+import {
+  addCustomClientModsAt,
+  customClientModsMatch,
+  deleteCustomClientModsAt,
+  enabledCustomClientMods,
+  readCustomClientMods,
+  setCustomClientModEnabledAt,
+  synchronizeCustomClientMods,
+  type AddCustomClientModsResult,
+  type CustomClientMod,
+} from "./custom-mods";
+
+export { CustomModError } from "./custom-mods";
+export type { AddCustomClientModsResult, CustomClientMod } from "./custom-mods";
 
 const execFileAsync = promisify(execFile);
 const JAVA_MAJOR = 25;
@@ -567,8 +581,8 @@ async function installBuildMods(
       fileName: mod.fileName,
     });
   }
-  await reconcileManagedMods(
-    modsDirectory,
+  await synchronizeCustomClientMods(
+    location,
     mods.map((mod) => mod.fileName),
   );
 }
@@ -603,10 +617,13 @@ export async function getMinecraftBuildStatus(
       if ((await sha1File(join(location, "mods", mod.fileName))) !== mod.sha1)
         return "update";
     }
+    const customMods = await enabledCustomClientMods(location);
+    if (!(await customClientModsMatch(location))) return "update";
     if (
       !(await managedModsMatch(
         join(location, "mods"),
         build.mods.map((mod) => mod.fileName),
+        customMods.map((mod) => mod.fileName),
       ))
     )
       return "update";
@@ -620,6 +637,47 @@ export function minecraftInstanceDirectory(buildId: string): string {
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(buildId))
     throw new Error("Недопустимый идентификатор сборки.");
   return instanceRoot(buildId);
+}
+
+export async function listCustomClientMods(
+  buildId: string,
+): Promise<CustomClientMod[]> {
+  return readCustomClientMods(instanceRoot(buildId));
+}
+
+export async function addCustomClientMods(
+  build: MinecraftBuild,
+  sourcePaths: string[],
+): Promise<AddCustomClientModsResult> {
+  return addCustomClientModsAt(
+    instanceRoot(build.id),
+    sourcePaths,
+    build.mods.map((mod) => mod.fileName),
+  );
+}
+
+export async function setCustomClientModEnabled(
+  build: MinecraftBuild,
+  id: string,
+  enabled: boolean,
+): Promise<CustomClientMod> {
+  return setCustomClientModEnabledAt(
+    instanceRoot(build.id),
+    id,
+    enabled,
+    build.mods.map((mod) => mod.fileName),
+  );
+}
+
+export async function deleteCustomClientMods(
+  build: MinecraftBuild,
+  ids: string[],
+): Promise<string[]> {
+  return deleteCustomClientModsAt(
+    instanceRoot(build.id),
+    ids,
+    build.mods.map((mod) => mod.fileName),
+  );
 }
 
 export async function removeMinecraftRuntime(buildId: string): Promise<void> {

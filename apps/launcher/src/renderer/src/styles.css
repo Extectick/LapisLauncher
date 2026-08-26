@@ -667,8 +667,28 @@ button:focus-visible {
 .modal-card.admin-mods-dialog {
   width: min(780px, calc(100vw - 48px));
 }
+.modal-card.user-mods-dialog {
+  width: min(620px, calc(100vw - 48px));
+}
 .modal-card.admin-mods-dialog > .modal-content {
   padding-top: 0;
+}
+.user-client-mods {
+  max-height: min(560px, calc(100vh - 150px));
+  padding-right: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: rgba(119, 177, 239, 0.55) transparent;
+  scrollbar-width: thin;
+}
+.custom-mods-locked {
+  margin-top: 8px !important;
+  padding: 8px 10px;
+  border: 1px solid rgba(236, 184, 92, 0.28);
+  border-radius: 8px;
+  color: #f4cf8d !important;
+  background: rgba(163, 105, 32, 0.12);
+  font-size: 11px;
 }
 .admin-mods-toolbar {
   position: sticky;
@@ -704,6 +724,16 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+.user-mods-toolbar .admin-mods-commands {
+  margin-left: auto;
+}
+.user-mods-toolbar {
+  position: static;
+  margin: 0;
+  padding: 10px 12px;
+  background: transparent;
+  backdrop-filter: none;
 }
 .admin-mod-command {
   display: inline-flex;
@@ -754,6 +784,23 @@ button:focus-visible {
   border-bottom: 1px solid rgba(125, 176, 244, 0.16);
   border-radius: 8px;
   transition: background 0.12s ease;
+}
+.user-client-mods li {
+  grid-template-columns: 16px minmax(0, 1fr) 38px;
+}
+.user-client-mods > ul > li {
+  margin: 0;
+  padding: 12px;
+  border-radius: 0;
+}
+.user-client-mods > ul > li.selected {
+  background: rgba(75, 143, 218, 0.13);
+}
+.user-client-mods > ul > li:hover {
+  background: rgba(75, 143, 218, 0.09);
+}
+.user-client-mods > ul > li.selected:hover {
+  background: rgba(75, 143, 218, 0.16);
 }
 .admin-client-mods li:last-child {
   border-bottom: 0;
@@ -816,6 +863,12 @@ button:focus-visible {
 .admin-mods-empty {
   margin: 8px 0 2px;
 }
+.user-mods-empty {
+  display: grid;
+  min-height: 76px;
+  margin: 0;
+  place-items: center;
+}
 .admin-mods-loading {
   display: grid;
   min-height: 80px;
@@ -855,6 +908,43 @@ button:focus-visible {
 .admin-mod-toggle:hover:not(:disabled) {
   filter: brightness(1.12);
   transform: none;
+}
+.required-mods-details {
+  margin-top: 0;
+  border-top: 1px solid rgba(125, 176, 244, 0.18);
+}
+.required-mods-details > summary {
+  padding: 10px 12px;
+  color: #a9bfd9;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+  user-select: none;
+}
+.required-mods-details > summary:focus {
+  outline: none;
+}
+.required-mods-details > summary:focus-visible {
+  color: #dcecff;
+  background: rgba(75, 143, 218, 0.09);
+  box-shadow: inset 2px 0 #72b5ff;
+}
+.required-mods-list {
+  gap: 0;
+  margin: 0 !important;
+  padding: 0 12px !important;
+  border-top: 1px solid rgba(125, 176, 244, 0.14);
+}
+.admin-client-mods .required-mods-list li {
+  display: block;
+  margin: 0;
+  padding: 8px 2px;
+  overflow: hidden;
+  color: #9eb5cf;
+  border-radius: 0;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .servers {
   min-width: 0;

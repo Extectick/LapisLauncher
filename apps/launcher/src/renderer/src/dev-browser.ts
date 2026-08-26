@@ -416,6 +416,19 @@ export function installBrowserDevBridge(): void {
       onStatus: () => () => undefined,
     },
     runtime: {
+      customMods: async () => ({ ok: true, data: [] }),
+      addCustomMod: async () =>
+        resultError(
+          "",
+          "Добавление локальных модов доступно только в Electron.",
+        ),
+      toggleCustomMod: async () =>
+        resultError(
+          "",
+          "Изменение локальных модов доступно только в Electron.",
+        ),
+      deleteCustomMods: async () =>
+        resultError("", "Удаление локальных модов доступно только в Electron."),
       javaStatus: async () => ({
         ok: true,
         data: { major: 25, installed: true },

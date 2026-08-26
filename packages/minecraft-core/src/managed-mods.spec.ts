@@ -43,4 +43,23 @@ describe("managed client mods", () => {
       false,
     );
   });
+
+  it("keeps custom files explicitly registered by the launcher", async () => {
+    directory = await mkdtemp(join(tmpdir(), "lapis-managed-mods-"));
+    await Promise.all([
+      writeFile(join(directory, "official.jar"), "official"),
+      writeFile(join(directory, "custom.jar"), "custom"),
+      writeFile(join(directory, "untracked.jar"), "untracked"),
+    ]);
+
+    await reconcileManagedMods(directory, ["official.jar"], ["custom.jar"]);
+
+    await expect(readFile(join(directory, "custom.jar"), "utf8")).resolves.toBe(
+      "custom",
+    );
+    await expect(readFile(join(directory, "untracked.jar"))).rejects.toThrow();
+    await expect(
+      managedModsMatch(directory, ["official.jar"], ["custom.jar"]),
+    ).resolves.toBe(true);
+  });
 });

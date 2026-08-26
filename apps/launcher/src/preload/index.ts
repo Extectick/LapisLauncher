@@ -65,6 +65,20 @@ type LaunchSettings = {
   maxMemoryMb: number;
   fullscreen: boolean;
 };
+type CustomClientMod = {
+  id: string;
+  fileName: string;
+  name: string;
+  version: string | null;
+  size: number;
+  sha1: string;
+  enabled: boolean;
+  addedAt: string;
+};
+type AddCustomClientModsResult = {
+  added: CustomClientMod[];
+  rejected: Array<{ fileName: string; message: string }>;
+};
 contextBridge.exposeInMainWorld("lapis", {
   auth: {
     register: (input: AuthInput): Promise<IpcResult<AuthResult>> =>
@@ -139,6 +153,23 @@ contextBridge.exposeInMainWorld("lapis", {
     },
   },
   runtime: {
+    customMods: (buildId: string): Promise<IpcResult<CustomClientMod[]>> =>
+      ipcRenderer.invoke("runtime:custom-mods", buildId),
+    addCustomMod: (
+      serverId: string,
+    ): Promise<IpcResult<AddCustomClientModsResult>> =>
+      ipcRenderer.invoke("runtime:add-custom-mod", serverId),
+    toggleCustomMod: (
+      serverId: string,
+      modId: string,
+      enabled: boolean,
+    ): Promise<IpcResult<CustomClientMod>> =>
+      ipcRenderer.invoke("runtime:toggle-custom-mod", serverId, modId, enabled),
+    deleteCustomMods: (
+      serverId: string,
+      ids: string[],
+    ): Promise<IpcResult<string[]>> =>
+      ipcRenderer.invoke("runtime:delete-custom-mods", serverId, ids),
     javaStatus: (): Promise<IpcResult<{ major: number; installed: boolean }>> =>
       ipcRenderer.invoke("runtime:java-status"),
     ensureJava: (): Promise<IpcResult<{ major: number; installed: boolean }>> =>

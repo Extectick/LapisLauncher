@@ -64,13 +64,20 @@ import {
 } from "@lapis/contracts";
 import { z, ZodError } from "zod";
 import {
+  addCustomClientMods,
+  CustomModError,
+  deleteCustomClientMods,
   ensureJavaRuntime,
   ensureMinecraftRuntime,
   getJavaRuntime,
   getMinecraftBuildStatus,
   launchMinecraftRuntime,
+  listCustomClientMods,
   minecraftInstanceDirectory,
   removeMinecraftRuntime,
+  setCustomClientModEnabled,
+  type AddCustomClientModsResult,
+  type CustomClientMod,
   type MinecraftInstallProgressEvent,
 } from "@lapis/minecraft-core";
 import {
@@ -237,6 +244,12 @@ function defaultLaunchSettings(): LaunchSettings {
 
 function validServerId(serverId: unknown): serverId is string {
   return typeof serverId === "string" && /^[a-z0-9_-]{1,32}$/i.test(serverId);
+}
+
+function validBuildId(buildId: unknown): buildId is string {
+  return (
+    typeof buildId === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(buildId)
+  );
 }
 
 async function getLaunchSettings(serverId: string): Promise<LaunchSettings> {
@@ -1579,6 +1592,125 @@ app.whenReady().then(async () => {
                 : "Не удалось удалить клиентские моды.",
           },
         } satisfies IpcResult<AdminClientModDeleteResult>;
+      }
+    },
+  );
+  const customModFailure = <T>(
+    error: unknown,
+    fallback: string,
+  ): IpcResult<T> => ({
+    ok: false,
+    error: {
+      message:
+        error instanceof CustomModError
+          ? error.message
+          : error instanceof ApiError
+            ? error.messageForUser
+            : fallback,
+    },
+  });
+  const requireStoppedBuild = async (serverId: string): Promise<void> => {
+    const game = await currentRunningGame();
+    if (game?.serverId === serverId)
+      throw new CustomModError(
+        "Сначала остановите Minecraft, чтобы изменить пользовательские моды.",
+      );
+  };
+  ipcMain.handle("runtime:custom-mods", async (_event, buildId: unknown) => {
+    try {
+      if (!validBuildId(buildId)) throw new ApiError("Некорректная сборка.");
+      return {
+        ok: true,
+        data: await listCustomClientMods(buildId),
+      } satisfies IpcResult<CustomClientMod[]>;
+    } catch (error) {
+      return customModFailure<CustomClientMod[]>(
+        error,
+        "Не удалось загрузить пользовательские моды.",
+      );
+    }
+  });
+  ipcMain.handle(
+    "runtime:add-custom-mod",
+    async (_event, serverId: unknown) => {
+      try {
+        if (!validServerId(serverId))
+          throw new ApiError("Некорректный сервер.");
+        await requireStoppedBuild(serverId);
+        const selected = await dialog.showOpenDialog({
+          title: "Добавить пользовательские моды",
+          properties: ["openFile", "multiSelections"],
+          filters: [{ name: "Minecraft Fabric mod", extensions: ["jar"] }],
+        });
+        if (selected.canceled || selected.filePaths.length === 0)
+          return {
+            ok: true,
+            data: { added: [], rejected: [] },
+          } satisfies IpcResult<AddCustomClientModsResult>;
+        const manifest = await requestInstallManifest(serverId);
+        return {
+          ok: true,
+          data: await addCustomClientMods(manifest, selected.filePaths),
+        } satisfies IpcResult<AddCustomClientModsResult>;
+      } catch (error) {
+        return customModFailure<AddCustomClientModsResult>(
+          error,
+          "Не удалось добавить пользовательские моды.",
+        );
+      }
+    },
+  );
+  ipcMain.handle(
+    "runtime:toggle-custom-mod",
+    async (_event, serverId: unknown, modId: unknown, enabled: unknown) => {
+      try {
+        if (
+          !validServerId(serverId) ||
+          typeof modId !== "string" ||
+          !/^[a-f0-9]{40}$/.test(modId) ||
+          typeof enabled !== "boolean"
+        )
+          throw new ApiError("Некорректный пользовательский мод.");
+        await requireStoppedBuild(serverId);
+        const manifest = await requestInstallManifest(serverId);
+        return {
+          ok: true,
+          data: await setCustomClientModEnabled(manifest, modId, enabled),
+        } satisfies IpcResult<CustomClientMod>;
+      } catch (error) {
+        return customModFailure<CustomClientMod>(
+          error,
+          "Не удалось изменить пользовательский мод.",
+        );
+      }
+    },
+  );
+  ipcMain.handle(
+    "runtime:delete-custom-mods",
+    async (_event, serverId: unknown, ids: unknown) => {
+      try {
+        if (
+          !validServerId(serverId) ||
+          !Array.isArray(ids) ||
+          ids.length === 0 ||
+          ids.length > 256 ||
+          !ids.every(
+            (id): id is string =>
+              typeof id === "string" && /^[a-f0-9]{40}$/.test(id),
+          )
+        )
+          throw new ApiError("Выберите пользовательские моды для удаления.");
+        await requireStoppedBuild(serverId);
+        const manifest = await requestInstallManifest(serverId);
+        return {
+          ok: true,
+          data: await deleteCustomClientMods(manifest, ids),
+        } satisfies IpcResult<string[]>;
+      } catch (error) {
+        return customModFailure<string[]>(
+          error,
+          "Не удалось удалить пользовательские моды.",
+        );
       }
     },
   );
