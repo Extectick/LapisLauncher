@@ -35,6 +35,7 @@ import {
   type AddCustomClientModsResult,
   type CustomClientMod,
 } from "./custom-mods";
+import { applyAudioCompatibilitySettingsAt } from "./audio-compatibility";
 
 export { CustomModError } from "./custom-mods";
 export type { AddCustomClientModsResult, CustomClientMod } from "./custom-mods";
@@ -796,6 +797,7 @@ export async function launchMinecraftRuntime(
   if (!Number.isSafeInteger(profile.memoryMb) || profile.memoryMb < 1024) {
     throw new Error("Выбран недопустимый объём памяти для Minecraft.");
   }
+  await applyAudioCompatibilitySettingsAt(location);
   await prepareWindowsNativeLayout(location, runtime.fabricVersion);
   return launch({
     gameProfile: { name: profile.nickname, id: profile.uuid },
