@@ -44,6 +44,7 @@ jobs:
           remote="$DEPLOY_USER@$DEPLOY_HOST"
           stage="/tmp/lapis-api-edge-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.conf"
           ssh_options=(-i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15)
+          ssh "${ssh_options[@]}" "$remote" 'id; if docker ps --format "{{.Names}}" >/dev/null 2>&1; then echo docker-access=yes; else echo docker-access=no; fi; if [ -w /opt/lapis-api/source ]; then echo api-source-write=yes; else echo api-source-write=no; fi'
           scp "${ssh_options[@]}" deploy/nginx/lapis-mc-updates.https.conf "$remote:$stage"
           ssh "${ssh_options[@]}" "$remote" "bash -s -- '$stage' '$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT'" <<'REMOTE'
           set -euo pipefail
