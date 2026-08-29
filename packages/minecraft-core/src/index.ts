@@ -26,19 +26,31 @@ import { createHash } from "node:crypto";
 import { managedModsMatch } from "./managed-mods";
 import {
   addCustomClientModsAt,
+  customClientModsDirectoryAt,
   customClientModsMatch,
   deleteCustomClientModsAt,
   enabledCustomClientMods,
   readCustomClientMods,
+  refreshCustomClientModsAt,
   setCustomClientModEnabledAt,
   synchronizeCustomClientMods,
   type AddCustomClientModsResult,
   type CustomClientMod,
+  type RefreshCustomClientModsResult,
 } from "./custom-mods";
 import { applyAudioCompatibilitySettingsAt } from "./audio-compatibility";
+import { applyGraphicsCompatibilitySettingsAt } from "./graphics-compatibility";
+import {
+  minecraftSpawnOptions,
+  spawnMinecraftProcess,
+} from "./minecraft-process";
 
 export { CustomModError } from "./custom-mods";
-export type { AddCustomClientModsResult, CustomClientMod } from "./custom-mods";
+export type {
+  AddCustomClientModsResult,
+  CustomClientMod,
+  RefreshCustomClientModsResult,
+} from "./custom-mods";
 
 const execFileAsync = promisify(execFile);
 const JAVA_MAJOR = 25;
@@ -640,6 +652,10 @@ export function minecraftInstanceDirectory(buildId: string): string {
   return instanceRoot(buildId);
 }
 
+export function customClientModsDirectory(buildId: string): string {
+  return customClientModsDirectoryAt(minecraftInstanceDirectory(buildId));
+}
+
 export async function listCustomClientMods(
   buildId: string,
 ): Promise<CustomClientMod[]> {
@@ -653,6 +669,15 @@ export async function addCustomClientMods(
   return addCustomClientModsAt(
     instanceRoot(build.id),
     sourcePaths,
+    build.mods.map((mod) => mod.fileName),
+  );
+}
+
+export async function refreshCustomClientMods(
+  build: MinecraftBuild,
+): Promise<RefreshCustomClientModsResult> {
+  return refreshCustomClientModsAt(
+    instanceRoot(build.id),
     build.mods.map((mod) => mod.fileName),
   );
 }
@@ -798,7 +823,15 @@ export async function launchMinecraftRuntime(
     throw new Error("Выбран недопустимый объём памяти для Minecraft.");
   }
   await applyAudioCompatibilitySettingsAt(location);
+  await applyGraphicsCompatibilitySettingsAt(location);
   await prepareWindowsNativeLayout(location, runtime.fabricVersion);
+  const environment = profile.bridgeBootstrap
+    ? {
+        ...process.env,
+        LAPIS_BRIDGE_PORT: String(profile.bridgeBootstrap.port),
+        LAPIS_BRIDGE_NONCE: profile.bridgeBootstrap.nonce,
+      }
+    : process.env;
   return launch({
     gameProfile: { name: profile.nickname, id: profile.uuid },
     accessToken: "0",
@@ -813,17 +846,8 @@ export async function launchMinecraftRuntime(
     minMemory: Math.min(1024, profile.memoryMb),
     maxMemory: profile.memoryMb,
     resolution: profile.fullscreen ? { fullscreen: true } : undefined,
-    extraExecOption: {
-      cwd: location,
-      windowsHide: false,
-      env: profile.bridgeBootstrap
-        ? {
-            ...process.env,
-            LAPIS_BRIDGE_PORT: String(profile.bridgeBootstrap.port),
-            LAPIS_BRIDGE_NONCE: profile.bridgeBootstrap.nonce,
-          }
-        : process.env,
-    },
+    spawn: spawnMinecraftProcess,
+    extraExecOption: minecraftSpawnOptions(location, environment),
   });
 }
 

@@ -9,7 +9,7 @@ import {
 } from "electron";
 import { VelopackApp } from "velopack";
 import log from "electron-log/main";
-import type { OpenDialogOptions } from "electron";
+import type { OpenDialogOptions, WebContents } from "electron";
 import { is } from "@electron-toolkit/utils";
 import { FSWatcher, watch } from "node:fs";
 import {
@@ -66,6 +66,7 @@ import { z, ZodError } from "zod";
 import {
   addCustomClientMods,
   CustomModError,
+  customClientModsDirectory,
   deleteCustomClientMods,
   ensureJavaRuntime,
   ensureMinecraftRuntime,
@@ -75,10 +76,12 @@ import {
   listCustomClientMods,
   minecraftInstanceDirectory,
   removeMinecraftRuntime,
+  refreshCustomClientMods,
   setCustomClientModEnabled,
   type AddCustomClientModsResult,
   type CustomClientMod,
   type MinecraftInstallProgressEvent,
+  type RefreshCustomClientModsResult,
 } from "@lapis/minecraft-core";
 import {
   checkForUpdates,
@@ -90,11 +93,6 @@ import {
   shutdownUpdater,
 } from "./updater";
 import type { AppUpdateStatus } from "../shared/update-types";
-import {
-  MINECRAFT_SHUTDOWN_GRACE_MS,
-  MinecraftShutdownFallback,
-  minecraftLogShowsStopping,
-} from "./game-process-lifecycle";
 import { initializeLauncherLogging } from "./logging";
 import { createBridgeBootstrap } from "./bridge-bootstrap";
 
@@ -185,11 +183,91 @@ let restoreSessionRequest: Promise<
 > | null = null;
 let mainWindow: BrowserWindow | null = null;
 let gameLogWatcher: FSWatcher | null = null;
+type CustomModsWatchState = {
+  watcher: FSWatcher;
+  timer: NodeJS.Timeout | null;
+  sender: WebContents;
+  senderDestroyedListener: () => void;
+  serverId: string;
+  manifest: GameInstallManifest;
+  syncing: boolean;
+  pending: boolean;
+};
+let customModsWatchState: CustomModsWatchState | null = null;
 let bridgeBootstrapClose: (() => void) | null = null;
 let gameProcessMonitor: NodeJS.Timeout | null = null;
 let closeAfterGameExit = false;
 let appIsQuitting = false;
-const gameShutdownFallback = new MinecraftShutdownFallback();
+
+function stopCustomModsWatcher(senderId?: number): void {
+  const state = customModsWatchState;
+  if (!state || (senderId !== undefined && state.sender.id !== senderId))
+    return;
+  if (state.timer) clearTimeout(state.timer);
+  state.watcher.close();
+  state.sender.removeListener("destroyed", state.senderDestroyedListener);
+  customModsWatchState = null;
+}
+
+function customModsWatchFailure(
+  error: unknown,
+): IpcResult<RefreshCustomClientModsResult> {
+  return {
+    ok: false,
+    error: {
+      message:
+        error instanceof CustomModError
+          ? error.message
+          : error instanceof ApiError
+            ? error.messageForUser
+            : "Не удалось обновить список пользовательских модов.",
+    },
+  };
+}
+
+async function refreshWatchedCustomMods(
+  state: CustomModsWatchState,
+): Promise<void> {
+  if (customModsWatchState !== state) return;
+  if (state.syncing) {
+    state.pending = true;
+    return;
+  }
+  state.syncing = true;
+  try {
+    do {
+      state.pending = false;
+      const game = await currentRunningGame();
+      if (game?.serverId === state.serverId) return;
+      let result: IpcResult<RefreshCustomClientModsResult>;
+      try {
+        result = {
+          ok: true,
+          data: await refreshCustomClientMods(state.manifest),
+        };
+      } catch (error) {
+        result = customModsWatchFailure(error);
+      }
+      if (!state.sender.isDestroyed())
+        state.sender.send(
+          "runtime:custom-mods-changed",
+          state.serverId,
+          result,
+        );
+    } while (state.pending && customModsWatchState === state);
+  } finally {
+    state.syncing = false;
+  }
+}
+
+function scheduleCustomModsRefresh(state: CustomModsWatchState): void {
+  if (customModsWatchState !== state) return;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    void refreshWatchedCustomMods(state);
+  }, 500);
+}
 
 class ApiError extends Error {
   constructor(
@@ -497,7 +575,9 @@ async function requestAdminClientModUpload(
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok)
     throw new ApiError(
-      apiPayloadMessage(payload, "Не удалось загрузить клиентский мод."),
+      response.status === 413
+        ? "Файл мода превышает допустимый сервером размер."
+        : apiPayloadMessage(payload, "Не удалось загрузить клиентский мод."),
       response.status,
     );
   return adminClientModSchema.parse(payload);
@@ -1016,7 +1096,6 @@ function clearRunningGame(): void {
   const hadRunningGame = runningGame !== null;
   runningGame = null;
   void rm(runningGameStatePath(), { force: true }).catch(() => undefined);
-  gameShutdownFallback.cancel();
   if (gameProcessMonitor) clearInterval(gameProcessMonitor);
   gameProcessMonitor = null;
   gameLogWatcher?.close();
@@ -1029,38 +1108,6 @@ function clearRunningGame(): void {
     closeAfterGameExit = false;
     app.quit();
   }
-}
-
-function scheduleStuckGameTermination(game: RunningGame): void {
-  const scheduled = gameShutdownFallback.schedule(game.pid, (pid) => {
-    void (async () => {
-      const activeGame = runningGame;
-      if (!activeGame || activeGame.pid !== pid) return;
-      if (!processIsRunning(pid)) {
-        clearRunningGame();
-        return;
-      }
-      runtimeLog.warn(
-        `Minecraft pid=${pid} did not exit within ${MINECRAFT_SHUTDOWN_GRACE_MS}ms after Stopping; terminating its process tree`,
-      );
-      try {
-        await terminateProcessTree(pid);
-      } catch (error) {
-        if (processIsRunning(pid)) {
-          runtimeLog.error(
-            `Unable to terminate stuck Minecraft pid=${pid}`,
-            error,
-          );
-          return;
-        }
-      }
-      if (runningGame?.pid === pid) clearRunningGame();
-    })();
-  });
-  if (scheduled)
-    runtimeLog.info(
-      `Minecraft pid=${game.pid} is shutting down; grace period started`,
-    );
 }
 
 function startGameProcessMonitor(): void {
@@ -1089,16 +1136,6 @@ async function currentRunningGame(): Promise<RunningGameStatus | null> {
   if (!processIsRunning(game.pid)) {
     clearRunningGame();
     return null;
-  }
-  try {
-    const logInfo = await stat(game.logPath);
-    if (logInfo.mtimeMs >= game.launchedAt) {
-      const logTail = await readLogTail(game.logPath, 65_536);
-      if (minecraftLogShowsStopping(logTail))
-        scheduleStuckGameTermination(game);
-    }
-  } catch {
-    // The log can be unavailable while Minecraft creates its game directory.
   }
   return { pid: game.pid, serverId: game.serverId, nickname: game.nickname };
 }
@@ -1631,6 +1668,88 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle(
+    "runtime:watch-custom-mods",
+    async (event, serverId: unknown) => {
+      try {
+        if (!validServerId(serverId))
+          throw new ApiError("Некорректный сервер.");
+        stopCustomModsWatcher();
+        const manifest = await requestInstallManifest(serverId);
+        const directory = customClientModsDirectory(manifest.id);
+        await mkdir(directory, { recursive: true });
+        const game = await currentRunningGame();
+        const initial: RefreshCustomClientModsResult =
+          game?.serverId === serverId
+            ? {
+                mods: await listCustomClientMods(manifest.id),
+                added: [],
+                rejected: [],
+              }
+            : await refreshCustomClientMods(manifest);
+        const senderDestroyedListener = (): void =>
+          stopCustomModsWatcher(event.sender.id);
+        const state: CustomModsWatchState = {
+          watcher: watch(directory, { persistent: false }, () => undefined),
+          timer: null,
+          sender: event.sender,
+          senderDestroyedListener,
+          serverId,
+          manifest,
+          syncing: false,
+          pending: false,
+        };
+        state.watcher.removeAllListeners("change");
+        state.watcher.on("change", () => scheduleCustomModsRefresh(state));
+        state.watcher.on("error", (error) => {
+          runtimeLog.warn("Custom mods directory watcher failed", error);
+          if (!state.sender.isDestroyed())
+            state.sender.send(
+              "runtime:custom-mods-changed",
+              state.serverId,
+              customModsWatchFailure(error),
+            );
+          stopCustomModsWatcher(state.sender.id);
+        });
+        customModsWatchState = state;
+        event.sender.once("destroyed", senderDestroyedListener);
+        return {
+          ok: true,
+          data: initial,
+        } satisfies IpcResult<RefreshCustomClientModsResult>;
+      } catch (error) {
+        return customModsWatchFailure(error);
+      }
+    },
+  );
+  ipcMain.handle("runtime:unwatch-custom-mods", (event) => {
+    stopCustomModsWatcher(event.sender.id);
+    return { ok: true, data: null } satisfies IpcResult<null>;
+  });
+  ipcMain.handle(
+    "runtime:open-custom-mods-folder",
+    async (_event, serverId: unknown) => {
+      try {
+        if (!validServerId(serverId))
+          throw new ApiError("Некорректный сервер.");
+        await requireStoppedBuild(serverId);
+        const manifest = await requestInstallManifest(serverId);
+        const directory = customClientModsDirectory(manifest.id);
+        await mkdir(directory, { recursive: true });
+        const message = await shell.openPath(directory);
+        if (message)
+          throw new CustomModError(
+            "Не удалось открыть папку пользовательских модов.",
+          );
+        return { ok: true, data: null } satisfies IpcResult<null>;
+      } catch (error) {
+        return customModFailure<null>(
+          error,
+          "Не удалось открыть папку пользовательских модов.",
+        );
+      }
+    },
+  );
+  ipcMain.handle(
     "runtime:add-custom-mod",
     async (_event, serverId: unknown) => {
       try {
@@ -1895,12 +2014,7 @@ app.whenReady().then(async () => {
     let launchStage: MinecraftLaunchStage = "validation";
     try {
       const activeGame = await currentRunningGame();
-      if (activeGame)
-        throw new ApiError(
-          gameShutdownFallback.isPendingFor(activeGame.pid)
-            ? "Minecraft завершает работу. Повторите запуск через несколько секунд."
-            : "Игра уже запущена.",
-        );
+      if (activeGame) throw new ApiError("Игра уже запущена.");
       if (typeof serverId !== "string" || !/^[a-z0-9_-]{1,32}$/i.test(serverId))
         throw new ApiError("Некорректный сервер.");
       launchStage = "manifest";
@@ -2025,5 +2139,6 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   appIsQuitting = true;
+  stopCustomModsWatcher();
   shutdownUpdater();
 });

@@ -16,6 +16,7 @@ import {
   faDownload,
   faCircleInfo,
   faEllipsisVertical,
+  faFolderOpen,
   faGear,
   faKey,
   faPlay,
@@ -49,6 +50,13 @@ type CustomClientMod = {
   sha1: string;
   enabled: boolean;
   addedAt: string;
+};
+type RendererResult<T> =
+  { ok: true; data: T } | { ok: false; error: { message: string } };
+type CustomModsRefreshResult = {
+  mods: CustomClientMod[];
+  added: CustomClientMod[];
+  rejected: Array<{ fileName: string; message: string }>;
 };
 type InstallProgress = {
   serverId: string;
@@ -1721,6 +1729,7 @@ function UserModsDialog({
   const [customMods, setCustomMods] = useState<CustomClientMod[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [openingFolder, setOpeningFolder] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1728,23 +1737,49 @@ function UserModsDialog({
 
   useEffect(() => {
     let active = true;
+    const applyCustomMods = (mods: CustomClientMod[]): void => {
+      setCustomMods(mods);
+      setSelected((current) => {
+        const available = new Set(mods.map((mod) => mod.id));
+        return new Set([...current].filter((id) => available.has(id)));
+      });
+      onEnabledCountChange(mods.filter((mod) => mod.enabled).length);
+    };
+    const showRefreshResult = (
+      result: RendererResult<CustomModsRefreshResult>,
+    ): void => {
+      if (!active) return;
+      if (!result.ok) {
+        setError(result.error.message);
+        return;
+      }
+      applyCustomMods(result.data.mods);
+      if (result.data.rejected.length > 0) {
+        const first = result.data.rejected[0]!;
+        setError(`${first.fileName}: ${first.message}`);
+      }
+    };
+    const unsubscribe = window.lapis.runtime.onCustomModsChanged(
+      (serverId, result) => {
+        if (serverId === server.id) showRefreshResult(result);
+      },
+    );
     void Promise.all([
       window.lapis.catalog.mods(server.id),
-      window.lapis.runtime.customMods(server.build.id),
+      window.lapis.runtime.watchCustomMods(server.id),
     ]).then(([bundled, custom]) => {
       if (!active) return;
       if (bundled.ok) setBundledMods(bundled.data);
       else setError(bundled.error.message);
-      if (custom.ok) {
-        setCustomMods(custom.data);
-        onEnabledCountChange(custom.data.filter((mod) => mod.enabled).length);
-      } else setError(custom.error.message);
+      showRefreshResult(custom);
       setLoading(false);
     });
     return () => {
       active = false;
+      unsubscribe();
+      void window.lapis.runtime.unwatchCustomMods();
     };
-  }, [server.build.id, server.id]);
+  }, [server.id, locked]);
 
   function toggleSelected(modId: string): void {
     setSelected((current) => {
@@ -1780,6 +1815,15 @@ function UserModsDialog({
       }
     }
     setAdding(false);
+  }
+
+  async function openModsFolder(): Promise<void> {
+    if (openingFolder || locked) return;
+    setOpeningFolder(true);
+    setError("");
+    const result = await window.lapis.runtime.openCustomModsFolder(server.id);
+    if (!result.ok) setError(result.error.message);
+    setOpeningFolder(false);
   }
 
   async function toggleMod(mod: CustomClientMod): Promise<void> {
@@ -1875,6 +1919,18 @@ function UserModsDialog({
                   Удалить
                 </button>
               )}
+              <IconButton
+                className="custom-mods-folder-button"
+                type="button"
+                icon={
+                  <FontAwesomeIcon icon={faFolderOpen} aria-hidden="true" />
+                }
+                tooltip="Открыть папку модов"
+                size={34}
+                disabled={openingFolder || locked}
+                aria-label="Открыть папку пользовательских модов"
+                onClick={() => void openModsFolder()}
+              />
               <button
                 className="admin-mod-command"
                 type="button"

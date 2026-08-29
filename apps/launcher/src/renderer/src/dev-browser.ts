@@ -417,6 +417,14 @@ export function installBrowserDevBridge(): void {
     },
     runtime: {
       customMods: async () => ({ ok: true, data: [] }),
+      watchCustomMods: async () => ({
+        ok: true,
+        data: { mods: [], added: [], rejected: [] },
+      }),
+      unwatchCustomMods: async () => ({ ok: true, data: null }),
+      openCustomModsFolder: async () =>
+        resultError("", "Открытие папки доступно только в Electron."),
+      onCustomModsChanged: () => () => undefined,
       addCustomMod: async () =>
         resultError(
           "",

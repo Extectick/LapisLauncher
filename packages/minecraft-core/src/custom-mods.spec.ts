@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -15,6 +16,7 @@ import {
   addCustomClientModsAt,
   deleteCustomClientModsAt,
   readCustomClientMods,
+  refreshCustomClientModsAt,
   setCustomClientModEnabledAt,
 } from "./custom-mods";
 import { managedModsMatch } from "./managed-mods";
@@ -88,7 +90,7 @@ describe("local custom client mods", () => {
       access(join(instance, "mods", added.fileName)),
     ).rejects.toThrow();
     await expect(
-      access(join(instance, ".lapis-custom-mods", `${added.id}.jar`)),
+      access(join(instance, "custom-mods", `${added.id}.jar`)),
     ).resolves.toBeUndefined();
 
     await expect(
@@ -96,7 +98,7 @@ describe("local custom client mods", () => {
     ).resolves.toEqual([added.id]);
     await expect(readCustomClientMods(instance)).resolves.toEqual([]);
     await expect(
-      access(join(instance, ".lapis-custom-mods", `${added.id}.jar`)),
+      access(join(instance, "custom-mods", `${added.id}.jar`)),
     ).rejects.toThrow();
   });
 
@@ -150,5 +152,45 @@ describe("local custom client mods", () => {
       },
     ]);
     await expect(readCustomClientMods(instance)).resolves.toHaveLength(2);
+  });
+
+  it("discovers mods copied into the public custom mods directory", async () => {
+    const customDirectory = join(instance, "custom-mods");
+    await mkdir(customDirectory, { recursive: true });
+    const dropped = join(customDirectory, "example mod.jar");
+    await writeFile(dropped, await readFile(source));
+
+    const refreshed = await refreshCustomClientModsAt(instance, [
+      "official.jar",
+    ]);
+
+    expect(refreshed.added).toHaveLength(1);
+    expect(refreshed.mods).toMatchObject([
+      { name: "Local Example", enabled: false },
+    ]);
+    await expect(access(dropped)).rejects.toThrow();
+    await expect(
+      access(join(customDirectory, `${refreshed.mods[0]!.id}.jar`)),
+    ).resolves.toBeUndefined();
+
+    await rm(join(customDirectory, `${refreshed.mods[0]!.id}.jar`));
+    await expect(
+      refreshCustomClientModsAt(instance, ["official.jar"]),
+    ).resolves.toMatchObject({ mods: [] });
+  });
+
+  it("migrates the previous hidden custom mod storage without losing state", async () => {
+    const added = await addCustomClientModAt(instance, source, [
+      "official.jar",
+    ]);
+    const publicFile = join(instance, "custom-mods", `${added.id}.jar`);
+    const legacyDirectory = join(instance, ".lapis-custom-mods");
+    await mkdir(legacyDirectory, { recursive: true });
+    await rename(publicFile, join(legacyDirectory, `${added.id}.jar`));
+
+    await expect(readCustomClientMods(instance)).resolves.toMatchObject([
+      { id: added.id, name: "Local Example" },
+    ]);
+    await expect(access(publicFile)).resolves.toBeUndefined();
   });
 });

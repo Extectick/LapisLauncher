@@ -79,6 +79,9 @@ type AddCustomClientModsResult = {
   added: CustomClientMod[];
   rejected: Array<{ fileName: string; message: string }>;
 };
+type RefreshCustomClientModsResult = AddCustomClientModsResult & {
+  mods: CustomClientMod[];
+};
 contextBridge.exposeInMainWorld("lapis", {
   auth: {
     register: (input: AuthInput): Promise<IpcResult<AuthResult>> =>
@@ -155,6 +158,29 @@ contextBridge.exposeInMainWorld("lapis", {
   runtime: {
     customMods: (buildId: string): Promise<IpcResult<CustomClientMod[]>> =>
       ipcRenderer.invoke("runtime:custom-mods", buildId),
+    watchCustomMods: (
+      serverId: string,
+    ): Promise<IpcResult<RefreshCustomClientModsResult>> =>
+      ipcRenderer.invoke("runtime:watch-custom-mods", serverId),
+    unwatchCustomMods: (): Promise<IpcResult<null>> =>
+      ipcRenderer.invoke("runtime:unwatch-custom-mods"),
+    openCustomModsFolder: (serverId: string): Promise<IpcResult<null>> =>
+      ipcRenderer.invoke("runtime:open-custom-mods-folder", serverId),
+    onCustomModsChanged: (
+      callback: (
+        serverId: string,
+        result: IpcResult<RefreshCustomClientModsResult>,
+      ) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        serverId: string,
+        result: IpcResult<RefreshCustomClientModsResult>,
+      ): void => callback(serverId, result);
+      ipcRenderer.on("runtime:custom-mods-changed", listener);
+      return () =>
+        ipcRenderer.removeListener("runtime:custom-mods-changed", listener);
+    },
     addCustomMod: (
       serverId: string,
     ): Promise<IpcResult<AddCustomClientModsResult>> =>

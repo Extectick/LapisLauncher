@@ -79,6 +79,9 @@ type AddCustomClientModsResult = {
   added: CustomClientMod[];
   rejected: Array<{ fileName: string; message: string }>;
 };
+type RefreshCustomClientModsResult = AddCustomClientModsResult & {
+  mods: CustomClientMod[];
+};
 declare global {
   interface Window {
     lapis: {
@@ -136,6 +139,17 @@ declare global {
       };
       runtime: {
         customMods(buildId: string): Promise<IpcResult<CustomClientMod[]>>;
+        watchCustomMods(
+          serverId: string,
+        ): Promise<IpcResult<RefreshCustomClientModsResult>>;
+        unwatchCustomMods(): Promise<IpcResult<null>>;
+        openCustomModsFolder(serverId: string): Promise<IpcResult<null>>;
+        onCustomModsChanged(
+          callback: (
+            serverId: string,
+            result: IpcResult<RefreshCustomClientModsResult>,
+          ) => void,
+        ): () => void;
         addCustomMod(
           serverId: string,
         ): Promise<IpcResult<AddCustomClientModsResult>>;

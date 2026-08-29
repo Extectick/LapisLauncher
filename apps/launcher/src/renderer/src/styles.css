@@ -760,6 +760,33 @@ button:focus-visible {
 .admin-mod-command.danger:hover:not(:disabled) {
   background: rgba(199, 77, 101, 0.22);
 }
+.custom-mods-folder-button {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 0;
+  color: #b9d8fb;
+  border-radius: 8px;
+  background: transparent;
+}
+.custom-mods-folder-button .svg-inline--fa {
+  width: 16px;
+  height: 16px;
+}
+.custom-mods-folder-button:hover:not(:disabled) {
+  color: #eef7ff;
+  background: rgba(87, 157, 231, 0.2);
+  filter: none;
+  transform: none;
+}
+.custom-mods-folder-button::after {
+  right: 0;
+  top: calc(100% + 8px);
+  transform: translateY(-3px);
+}
+.custom-mods-folder-button:hover::after,
+.custom-mods-folder-button:focus-visible::after {
+  transform: none;
+}
 .admin-mod-command .spinner,
 .admin-mod-toggle .spinner {
   width: 13px;

@@ -1,9 +1,12 @@
 import AdmZip from "adm-zip";
 import { createReadStream } from "node:fs";
+import type { Dirent } from "node:fs";
 import {
+  access,
   copyFile,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -13,7 +16,8 @@ import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import { reconcileManagedMods } from "./managed-mods";
 
-const CUSTOM_MODS_DIRECTORY = ".lapis-custom-mods";
+const CUSTOM_MODS_DIRECTORY = "custom-mods";
+const LEGACY_CUSTOM_MODS_DIRECTORY = ".lapis-custom-mods";
 const CUSTOM_MODS_FILE = ".lapis-custom-mods.json";
 const MAX_CUSTOM_MOD_BYTES = 128 * 1024 * 1024;
 const SHA1_PATTERN = /^[a-f0-9]{40}$/;
@@ -35,6 +39,10 @@ export type AddCustomClientModsResult = {
   rejected: Array<{ fileName: string; message: string }>;
 };
 
+export type RefreshCustomClientModsResult = AddCustomClientModsResult & {
+  mods: CustomClientMod[];
+};
+
 type CustomModsState = {
   version: 1;
   mods: CustomClientMod[];
@@ -53,6 +61,31 @@ function statePath(location: string): string {
 
 function storageDirectory(location: string): string {
   return join(location, CUSTOM_MODS_DIRECTORY);
+}
+
+export function customClientModsDirectoryAt(location: string): string {
+  return storageDirectory(location);
+}
+
+async function ensureStorageDirectory(location: string): Promise<string> {
+  const destination = storageDirectory(location);
+  await mkdir(destination, { recursive: true });
+  const legacy = join(location, LEGACY_CUSTOM_MODS_DIRECTORY);
+  const entries: Dirent[] = await readdir(legacy, {
+    withFileTypes: true,
+  }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^[a-f0-9]{40}\.jar$/i.test(entry.name)) continue;
+    const source = join(legacy, entry.name);
+    const target = join(destination, entry.name.toLowerCase());
+    try {
+      await access(target);
+      await rm(source, { force: true });
+    } catch {
+      await rename(source, target);
+    }
+  }
+  return destination;
 }
 
 function storagePath(location: string, id: string): string {
@@ -208,6 +241,7 @@ async function fileMatches(
 export async function readCustomClientMods(
   location: string,
 ): Promise<CustomClientMod[]> {
+  await ensureStorageDirectory(location);
   const state = await readState(location);
   return [...state.mods].sort((left, right) =>
     right.addedAt.localeCompare(left.addedAt),
@@ -217,6 +251,7 @@ export async function readCustomClientMods(
 export async function enabledCustomClientMods(
   location: string,
 ): Promise<CustomClientMod[]> {
+  await ensureStorageDirectory(location);
   return (await readState(location)).mods.filter((mod) => mod.enabled);
 }
 
@@ -225,6 +260,7 @@ export async function synchronizeCustomClientMods(
   officialFiles: string[],
   mods?: CustomClientMod[],
 ): Promise<void> {
+  await ensureStorageDirectory(location);
   await Promise.all([
     mkdir(join(location, "mods"), { recursive: true }),
     mkdir(storageDirectory(location), { recursive: true }),
@@ -277,6 +313,7 @@ export async function addCustomClientModAt(
   sourcePath: string,
   officialFiles: string[],
 ): Promise<CustomClientMod> {
+  await ensureStorageDirectory(location);
   const info = await stat(sourcePath).catch(() => null);
   if (!info?.isFile()) throw new CustomModError("Файл мода не найден.");
   if (info.size <= 0 || info.size > MAX_CUSTOM_MOD_BYTES)
@@ -351,6 +388,7 @@ export async function setCustomClientModEnabledAt(
   enabled: boolean,
   officialFiles: string[],
 ): Promise<CustomClientMod> {
+  await ensureStorageDirectory(location);
   if (!SHA1_PATTERN.test(id)) throw new CustomModError("Некорректный мод.");
   const state = await readState(location);
   const current = state.mods.find((mod) => mod.id === id);
@@ -370,6 +408,7 @@ export async function deleteCustomClientModsAt(
   ids: string[],
   officialFiles: string[],
 ): Promise<string[]> {
+  await ensureStorageDirectory(location);
   const requested = new Set(ids);
   if (
     requested.size === 0 ||
@@ -391,4 +430,48 @@ export async function deleteCustomClientModsAt(
     removed.map((mod) => rm(storagePath(location, mod.id), { force: true })),
   );
   return removed.map((mod) => mod.id);
+}
+
+export async function refreshCustomClientModsAt(
+  location: string,
+  officialFiles: string[],
+): Promise<RefreshCustomClientModsResult> {
+  const directory = await ensureStorageDirectory(location);
+  const originalState = await readState(location);
+  const retained: CustomClientMod[] = [];
+  for (const mod of originalState.mods) {
+    if (await fileMatches(storagePath(location, mod.id), mod.sha1))
+      retained.push(mod);
+  }
+  if (retained.length !== originalState.mods.length) {
+    await synchronizeCustomClientMods(location, officialFiles, retained);
+    await writeState(location, { version: 1, mods: retained });
+  }
+
+  const knownFiles = new Set(retained.map((mod) => `${mod.id}.jar`));
+  const candidates = (await readdir(directory, { withFileTypes: true }))
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.length <= 255 &&
+        /\.jar$/i.test(entry.name) &&
+        !knownFiles.has(entry.name.toLowerCase()),
+    )
+    .map((entry) => join(directory, entry.name));
+  const imported = await addCustomClientModsAt(
+    location,
+    candidates,
+    officialFiles,
+  );
+  const current = await readState(location);
+  const currentIds = new Set(current.mods.map((mod) => mod.id));
+  for (const candidate of candidates) {
+    const id = await sha1File(candidate).catch(() => null);
+    if (id && currentIds.has(id)) await rm(candidate, { force: true });
+  }
+  return {
+    mods: await readCustomClientMods(location),
+    added: imported.added,
+    rejected: imported.rejected,
+  };
 }
