@@ -31,3 +31,7 @@ nginx -t && systemctl reload nginx
 Never run `docker compose down -v` in production. Before a deployment, create a PostgreSQL custom-format dump and retain the previous source/config directory. A code rollback reuses the same named volume; database downgrade is not automatic and must be assessed per migration.
 
 The launcher production default is temporarily `https://lapis-mc.ru/api`. `LAPIS_API_URL` remains available only as a development/testing override. Once `api.lapis-mc.ru` is published in DNS and has a valid certificate, change only the launcher default and `LAPIS_PUBLIC_API_URL` back to `https://api.lapis-mc.ru`; endpoint paths are joined without dropping a base path.
+
+Nginx keeps the default API request-body limit at `64k`. Only the exact admin
+client-mod upload route is allowed up to `128m`; the API streams the multipart
+file to disk and independently enforces the same limit.
