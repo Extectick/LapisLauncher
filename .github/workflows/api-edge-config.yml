@@ -16,7 +16,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure pinned SSH connection
         env:
@@ -57,7 +57,10 @@ jobs:
           nginx_dump="$(mktemp)"
           cleanup() { rm -f "$stage" "$nginx_dump"; }
           trap cleanup EXIT
-          "${sudo_cmd[@]}" nginx -T >"$nginx_dump" 2>&1
+          if ! "${sudo_cmd[@]}" nginx -T >"$nginx_dump" 2>&1; then
+            cat "$nginx_dump" >&2
+            exit 1
+          fi
           target="$(awk '
             /^# configuration file / { file=$4; sub(/:$/, "", file) }
             /server_name lapis-mc.ru;/ { print file; exit }
