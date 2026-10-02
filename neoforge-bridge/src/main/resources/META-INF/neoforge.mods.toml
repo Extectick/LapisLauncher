@@ -4,7 +4,7 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="lapisbridge"
-version="0.1.1"
+version="0.1.2"
 displayName="Lapis Bridge"
 description='''Lapis Launcher ticket authentication for NeoForge 1.21.1.'''
 

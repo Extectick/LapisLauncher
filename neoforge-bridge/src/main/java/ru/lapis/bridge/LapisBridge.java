@@ -1,7 +1,9 @@
 package ru.lapis.bridge;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.mojang.authlib.properties.Property;
 import io.netty.buffer.ByteBuf;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -131,9 +133,19 @@ public final class LapisBridge {
             context.disconnect(Component.literal("Авторизация Lapis не пройдена."));
             return;
         }
-        CompletableFuture.supplyAsync(() -> consumeTicket(response)).whenComplete((valid, error) -> context.enqueueWork(() -> {
-            if (error != null || !valid) context.disconnect(Component.literal("Игровой билет Lapis недействителен или сервис недоступен."));
-            else context.finishCurrentTask(AuthTask.TYPE);
+        CompletableFuture.supplyAsync(() -> consumeTicket(response)).whenComplete((result, error) -> context.enqueueWork(() -> {
+            if (error != null || result == null) {
+                context.disconnect(Component.literal("Игровой билет Lapis недействителен или сервис недоступен."));
+                return;
+            }
+            // The server profile is authoritative. Clear any previously attached texture
+            // and use only the signed skin returned for this launcher ticket.
+            listener.getOwner().getProperties().removeAll("textures");
+            if (result.skin() != null) {
+                listener.getOwner().getProperties().put("textures",
+                        new Property("textures", result.skin().value(), result.skin().signature()));
+            }
+            context.finishCurrentTask(AuthTask.TYPE);
         }));
     }
 
@@ -154,7 +166,7 @@ public final class LapisBridge {
         }
     }
 
-    private static boolean consumeTicket(Response response) {
+    private static TicketResult consumeTicket(Response response) {
         try {
             JsonObject body = new JsonObject();
             body.addProperty("ticket", response.ticket());
@@ -162,17 +174,50 @@ public final class LapisBridge {
             HttpRequest request = HttpRequest.newBuilder(URI.create(API + "/v1/game-tickets/consume"))
                     .timeout(Duration.ofSeconds(5)).header("content-type", "application/json")
                     .header("X-Lapis-Bridge-Key", KEY)
+                    .header("X-Lapis-Bridge-Capabilities", "signed-skin-v1")
                     .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8)).build();
             HttpResponse<String> result = HTTP.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (result.statusCode() != 200 || result.body().length() > 16_384) return false;
+            if (result.statusCode() != 200 || result.body().length() > 16_384) return null;
             JsonObject payload = JsonParser.parseString(result.body()).getAsJsonObject();
-            return response.nickname().equals(payload.get("nickname").getAsString())
-                    && (!payload.has("minecraftUuid") || response.uuid().equalsIgnoreCase(payload.get("minecraftUuid").getAsString()));
+            if (!response.nickname().equals(payload.get("nickname").getAsString())
+                    || (payload.has("minecraftUuid") && !response.uuid().equalsIgnoreCase(payload.get("minecraftUuid").getAsString())))
+                return null;
+            return new TicketResult(parseSkin(payload.get("skin")));
         } catch (Exception error) {
             LOG.warn("Lapis ticket validation failed: {}", error.toString());
-            return false;
+            return null;
         }
     }
+
+    private static Skin parseSkin(JsonElement element) {
+        if (element == null || element.isJsonNull()) return null;
+        JsonObject skin = element.getAsJsonObject();
+        String value = skin.get("value").getAsString();
+        String signature = skin.get("signature").getAsString();
+        String textureUrl = skin.get("textureUrl").getAsString();
+        String model = skin.get("model").getAsString();
+        if (value.length() < 64 || value.length() > 8192
+                || signature.length() < 64 || signature.length() > 2048
+                || !value.matches("[A-Za-z0-9+/]+={0,2}")
+                || !signature.matches("[A-Za-z0-9+/]+={0,2}")
+                || !textureUrl.matches("https://textures\\.minecraft\\.net/texture/[a-fA-F0-9]{64}")
+                || !("default".equals(model) || "slim".equals(model)))
+            throw new IllegalArgumentException("Invalid signed launcher skin");
+        JsonObject signed = JsonParser.parseString(
+                new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8)).getAsJsonObject();
+        JsonObject signedSkin = signed.getAsJsonObject("textures").getAsJsonObject("SKIN");
+        JsonObject metadata = signedSkin.has("metadata") ? signedSkin.getAsJsonObject("metadata") : null;
+        String signedModel = metadata != null && metadata.has("model")
+                && "slim".equalsIgnoreCase(metadata.get("model").getAsString())
+                ? "slim" : "default";
+        if (!textureUrl.equals(signedSkin.get("url").getAsString())
+                || !model.equals(signedModel))
+            throw new IllegalArgumentException("Launcher skin metadata mismatch");
+        return new Skin(value, signature);
+    }
+
+    private record Skin(String value, String signature) {}
+    private record TicketResult(Skin skin) {}
 
     public record Challenge(int version, String serverId, String buildId, String nonce) implements CustomPacketPayload {
         public static final Type<Challenge> TYPE = new Type<>(ResourceLocation.fromNamespaceAndPath("lapisbridge", "challenge"));

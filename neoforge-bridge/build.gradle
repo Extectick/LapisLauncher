@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'ru.lapis'
-version = '0.1.1'
+version = '0.1.2'
 base.archivesName = 'lapis-bridge-neoforge-1.21.1'
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
