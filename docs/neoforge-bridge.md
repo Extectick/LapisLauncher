@@ -1,7 +1,7 @@
 # Lapis Bridge for NeoForge 1.21.1
 
 This is a separate build from the Fabric 26.2 bridge. The same
-`lapis-bridge-neoforge-1.21.1-0.1.2.jar` is required on the server and in the
+`lapis-bridge-neoforge-1.21.1-0.1.3.jar` is required on the server and in the
 Lapis Launcher client build. It is not a standalone password mod: it validates
 one-time game tickets issued by the Lapis API. Direct vanilla/NeoForge launches
 without a Lapis ticket are denied before joining the world.
@@ -46,6 +46,11 @@ Launcher. Players without an uploaded skin use Minecraft's default skin.
 SkinRestorer must remain outside the NeoForge server's mods directory so it
 cannot override launcher skins.
 
+The API normalizes MineSkin texture links to HTTPS. Signed texture payloads
+may still contain HTTP links to the same textures.minecraft.net path. Bridge
+0.1.3 compares the validated host and texture hash rather than the protocol;
+regression tests cover this and reject a different origin or hash.
+
 Keep the API URL and shared key private. Without the shared key, all Bridge
 logins are denied. The server must use the same player UUID policy as the
 launcher-issued profile (currently offline-mode UUIDs); confirm existing player
@@ -63,7 +68,7 @@ Migration order:
 4. Only after that test, remove the old Vouch authentication mod, deploy the
    Bridge to the live server, and restart it through Crafty.
 
-Production Thaumcraft Reborn now uses Bridge 0.1.2 on port 25566. Vouch,
+Production Thaumcraft Reborn now uses Bridge 0.1.3 on port 25566. Vouch,
 SkinRestorer, and the older Bridge are in disabled-mods. The prior world was
 moved to C:\Crafty\backups\thaumcraft-reborn-world-before-reset-2026-10-03;
 Crafty generated a new world. A real client skin check remains necessary.

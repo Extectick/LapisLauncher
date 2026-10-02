@@ -210,7 +210,7 @@ public final class LapisBridge {
         String signedModel = metadata != null && metadata.has("model")
                 && "slim".equalsIgnoreCase(metadata.get("model").getAsString())
                 ? "slim" : "default";
-        if (!textureUrl.equals(signedSkin.get("url").getAsString())
+        if (!SkinTextureUrls.sameTexture(textureUrl, signedSkin.get("url").getAsString())
                 || !model.equals(signedModel))
             throw new IllegalArgumentException("Launcher skin metadata mismatch");
         return new Skin(value, signature);
