@@ -198,6 +198,9 @@ importers:
       '@xmcl/installer':
         specifier: 5.4.0
         version: 5.4.0
+      '@xmcl/nbt':
+        specifier: 3.0.2
+        version: 3.0.2
       adm-zip:
         specifier: ^0.5.16
         version: 0.5.18
@@ -1190,6 +1193,10 @@ packages:
     resolution: {integrity: sha512-7vCVgm1E1IZ2cujiitFk9550Vgu2XAOn1ff90di638fMmTK0XkFMXKsSR/nGZmYKt+XiTMI/0B3TvreqbVjOug==}
     engines: {node: '>=16'}
 
+  '@xmcl/bytebuffer@0.1.1':
+    resolution: {integrity: sha512-Mja7XzIjXgXX/mDNqkVO6X3yltIYo18RYTo3J4UA8Di2TMZp90NRbLJ8PFRWAyDo/R+kNyErvfXMge2eB/q9pg==}
+    engines: {node: '>=16'}
+
   '@xmcl/core@2.13.0':
     resolution: {integrity: sha512-1BslEWUr234zZZTq9Q3QDm8APReYx7phy6PY5fodiztwblYbgipsd89vfx+Qvjc1xWpGtjei0AvxubUDeMFTgA==}
     engines: {node: '>=16.0'}
@@ -1205,6 +1212,10 @@ packages:
   '@xmcl/installer@5.4.0':
     resolution: {integrity: sha512-Y4UK6WWogDdgvcAUQnUPoJidlkuVQP5dSV5QueJhKeEJAA3lmGklwV8Dp8z0/92ITQ45OBsB7g08qV3eec4G6w==}
     engines: {node: '>=16.0'}
+
+  '@xmcl/nbt@3.0.2':
+    resolution: {integrity: sha512-RLv3bkre7wKHZzzaHYn3VUEa4B2HT1wYiP6gqaoxws/4CYT4IUGFO5YJAU/1IKVTUd7wMNQDXorJ9U/LGERPgQ==}
+    engines: {node: '>=16.4'}
 
   '@xmcl/task@4.1.0':
     resolution: {integrity: sha512-5Gqo/gltcenXTvRUz3H1Q2tNw9wWbOjeOVd9TeRNtBAOaKmdTD7iMhOIbdei71BSZ9FkVEhcUjO+PL+y+WNHoQ==}
@@ -2207,6 +2218,9 @@ packages:
   p-limit@3.1.0:
     resolution: {integrity: sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ==}
     engines: {node: '>=10'}
+
+  pako@2.2.0:
+    resolution: {integrity: sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==}
 
   path-is-absolute@1.0.1:
     resolution: {integrity: sha512-AVbw3UJ2e9bq64vSaS9Am0fje1Pa8pbGqTTsmXfaIiMpnr5DlDhfJOuLj9Sf95ZPVDAUerDfEk88MPmPe7UCQg==}
@@ -3686,6 +3700,8 @@ snapshots:
 
   '@xmcl/asm@1.0.1': {}
 
+  '@xmcl/bytebuffer@0.1.1': {}
+
   '@xmcl/core@2.13.0(yauzl@2.10.0)':
     dependencies:
       '@xmcl/unzip': 2.1.2(yauzl@2.10.0)
@@ -3713,6 +3729,11 @@ snapshots:
       undici: 6.0.1
       yauzl: 2.10.0
       yazl: 2.5.1
+
+  '@xmcl/nbt@3.0.2':
+    dependencies:
+      '@xmcl/bytebuffer': 0.1.1
+      pako: 2.2.0
 
   '@xmcl/task@4.1.0': {}
 
@@ -4857,6 +4878,8 @@ snapshots:
   p-limit@3.1.0:
     dependencies:
       yocto-queue: 0.1.0
+
+  pako@2.2.0: {}
 
   path-is-absolute@1.0.1: {}
 

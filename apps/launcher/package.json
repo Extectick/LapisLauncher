@@ -1,6 +1,6 @@
 {
   "name": "@lapis/launcher",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "LapisLauncher for managed Fabric and NeoForge Minecraft builds",
   "author": "Lapis Launcher",
   "private": true,

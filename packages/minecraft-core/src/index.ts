@@ -41,7 +41,11 @@ import {
 import { applyAudioCompatibilitySettingsAt } from "./audio-compatibility";
 import { applyGraphicsCompatibilitySettingsAt } from "./graphics-compatibility";
 import { applyDefaultLanguageAt } from "./default-language";
-import { directConnectTarget, type DirectConnectServer } from "./direct-connect";
+import { ensureServerListEntryAt } from "./server-list";
+import {
+  directConnectLaunchOptions,
+  type DirectConnectServer,
+} from "./direct-connect";
 import {
   minecraftSpawnOptions,
   spawnMinecraftProcess,
@@ -286,6 +290,7 @@ export type MinecraftLaunchProfile = {
   memoryMb: number;
   fullscreen: boolean;
   server: DirectConnectServer;
+  serverName: string;
   bridgeBootstrap?: { port: number; nonce: string };
 };
 
@@ -882,10 +887,11 @@ export async function launchMinecraftRuntime(
   if (!Number.isSafeInteger(profile.memoryMb) || profile.memoryMb < 1024) {
     throw new Error("Выбран недопустимый объём памяти для Minecraft.");
   }
-  const server = directConnectTarget(profile.server);
+  const directConnection = directConnectLaunchOptions(build.loader, profile.server);
   await applyAudioCompatibilitySettingsAt(location);
   await applyGraphicsCompatibilitySettingsAt(location);
   await applyDefaultLanguageAt(location);
+  await ensureServerListEntryAt(location, profile.serverName, profile.server);
   await prepareWindowsNativeLayout(location, runtime.profileVersion);
   const environment = profile.bridgeBootstrap
     ? {
@@ -907,7 +913,7 @@ export async function launchMinecraftRuntime(
     javaPath: executable,
     minMemory: Math.min(1024, profile.memoryMb),
     maxMemory: profile.memoryMb,
-    server,
+    ...directConnection,
     resolution: profile.fullscreen ? { fullscreen: true } : undefined,
     spawn: spawnMinecraftProcess,
     extraExecOption: minecraftSpawnOptions(location, environment),

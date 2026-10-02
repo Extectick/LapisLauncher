@@ -13,6 +13,7 @@
   "dependencies": {
     "@xmcl/core": "2.13.0",
     "@xmcl/installer": "5.4.0",
+    "@xmcl/nbt": "3.0.2",
     "adm-zip": "^0.5.16",
     "undici": "6.0.1"
   },

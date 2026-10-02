@@ -14,3 +14,20 @@ export function directConnectTarget(
   }
   return { ip: server.host, port: server.port };
 }
+
+export function directConnectLaunchOptions(
+  loader: "fabric" | "neoforge",
+  server: DirectConnectServer,
+):
+  | { server: { ip: string; port: number } }
+  | { extraMCArgs: string[] } {
+  const target = directConnectTarget(server);
+  if (loader === "neoforge") {
+    // Minecraft 1.21.1 ignores the older --server/--port arguments. Quick Play
+    // is its supported direct-connect entry point.
+    return {
+      extraMCArgs: ["--quickPlayMultiplayer", `${target.ip}:${target.port}`],
+    };
+  }
+  return { server: target };
+}
