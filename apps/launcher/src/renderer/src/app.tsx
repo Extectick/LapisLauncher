@@ -68,6 +68,7 @@ type InstallProgress = {
     | "libraries"
     | "assets"
     | "fabric"
+    | "neoforge"
     | "mods"
     | "complete";
   completed?: number;
@@ -566,6 +567,8 @@ function installProgressLabel(progress: InstallProgress): string {
       return `Ресурсы Minecraft${count ? ` · ${count}` : ""}`;
     case "fabric":
       return `Fabric${count ? ` · ${count}` : ""}`;
+    case "neoforge":
+      return `NeoForge${count ? ` · ${count}` : ""}`;
     case "mods":
       return `Моды${count ? ` · ${count}` : ""}${progress.fileName ? ` · ${progress.fileName}` : ""}`;
     case "complete":

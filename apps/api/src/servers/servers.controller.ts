@@ -47,7 +47,9 @@ export class ServersController {
   ): Promise<void> {
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(id)) throw new NotFoundException();
     const root = process.env.LAPIS_SERVER_ROOT ?? "V:\\LapisServer";
-    const path = join(root, "server-icon.png");
+    const path = id === "main"
+      ? join(root, "server-icon.png")
+      : join(root, "icons", `${id}.png`);
     try {
       await access(path);
     } catch {

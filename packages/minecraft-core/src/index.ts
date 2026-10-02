@@ -54,7 +54,6 @@ export type {
 
 const execFileAsync = promisify(execFile);
 const JAVA_MAJOR = 25;
-const ADOPTIUM_URL = `https://api.adoptium.net/v3/binary/latest/${JAVA_MAJOR}/ga/windows/x64/jre/hotspot/normal/eclipse`;
 
 export type JavaRuntime = { major: number; installed: boolean };
 export type MinecraftInstallPhase =
@@ -64,6 +63,7 @@ export type MinecraftInstallPhase =
   | "libraries"
   | "assets"
   | "fabric"
+  | "neoforge"
   | "mods"
   | "complete";
 export type MinecraftInstallProgressEvent = {
@@ -112,8 +112,8 @@ function lapisRoot(): string {
 function runtimeRoot(): string {
   return join(lapisRoot(), "runtime");
 }
-function javaPath(): string {
-  return join(runtimeRoot(), `temurin-${JAVA_MAJOR}`, "bin", "java.exe");
+function javaPath(major = JAVA_MAJOR): string {
+  return join(runtimeRoot(), `temurin-${major}`, "bin", "java.exe");
 }
 function instancesRoot(): string {
   return join(lapisRoot(), "instances");
@@ -122,7 +122,7 @@ function instancesRoot(): string {
 export type MinecraftBuild = {
   id: string;
   minecraftVersion: string;
-  loader: "fabric";
+  loader: "fabric" | "neoforge";
   loaderVersion: string;
   mods: {
     fileName: string;
@@ -139,14 +139,14 @@ function instanceRoot(buildId: string): string {
   return join(instancesRoot(), buildId);
 }
 
-async function javaWorks(executable: string): Promise<boolean> {
+async function javaWorks(executable: string, major = JAVA_MAJOR): Promise<boolean> {
   try {
     await access(executable);
     const { stderr } = await execFileAsync(executable, ["-version"], {
       windowsHide: true,
       timeout: 10_000,
     });
-    return new RegExp(`version\\s+"${JAVA_MAJOR}(?:[."]|$)`).test(stderr);
+    return new RegExp(`version\\s+"${major}(?:[."]|$)`).test(stderr);
   } catch {
     return false;
   }
@@ -217,23 +217,25 @@ export async function getJavaRuntime(): Promise<JavaRuntime> {
 
 export async function ensureJavaRuntime(
   onProgress?: MinecraftInstallProgress,
+  major = JAVA_MAJOR,
 ): Promise<JavaRuntime> {
-  const executable = javaPath();
+  if (major !== 21 && major !== 25) throw new Error("Неподдерживаемая версия Java.");
+  const executable = javaPath(major);
   onProgress?.({ phase: "java", progress: 1, completed: 0, total: 1 });
-  if (await javaWorks(executable)) {
+  if (await javaWorks(executable, major)) {
     onProgress?.({ phase: "java", progress: 10, completed: 1, total: 1 });
-    return { major: JAVA_MAJOR, installed: true };
+    return { major, installed: true };
   }
   const root = runtimeRoot();
-  const archive = join(root, `temurin-${JAVA_MAJOR}.zip.download`);
-  const staging = join(root, `temurin-${JAVA_MAJOR}.staging`);
+  const archive = join(root, `temurin-${major}.zip.download`);
+  const staging = join(root, `temurin-${major}.staging`);
   const destination = dirname(dirname(executable));
   await mkdir(root, { recursive: true });
   await ensureFreeDiskSpace(root, BigInt(GIB));
   await rm(staging, { recursive: true, force: true });
   try {
     let lastReportedProgress = -1;
-    await download(ADOPTIUM_URL, archive, (received, total) => {
+    await download(`https://api.adoptium.net/v3/binary/latest/${major}/ga/windows/x64/jre/hotspot/normal/eclipse`, archive, (received, total) => {
       const ratio = total > 0 ? received / total : 0;
       const progress = 1 + Math.round(Math.min(1, ratio) * 6);
       if (progress === lastReportedProgress) return;
@@ -243,26 +245,26 @@ export async function ensureJavaRuntime(
         progress,
         completed: received,
         total: total || undefined,
-        fileName: `Java ${JAVA_MAJOR}`,
+        fileName: `Java ${major}`,
       });
     });
     onProgress?.({
       phase: "java",
       progress: 8,
-      fileName: `Java ${JAVA_MAJOR}`,
+      fileName: `Java ${major}`,
     });
     await mkdir(staging, { recursive: true });
     await extractArchive(archive, staging);
     const found = await findJava(staging);
-    if (!found || !(await javaWorks(found)))
+    if (!found || !(await javaWorks(found, major)))
       throw new Error("Загруженный Java runtime не прошёл проверку.");
     await rm(destination, { recursive: true, force: true });
     await mkdir(dirname(destination), { recursive: true });
     await rename(dirname(dirname(found)), destination);
-    if (!(await javaWorks(executable)))
+    if (!(await javaWorks(executable, major)))
       throw new Error("Установленный Java runtime не прошёл проверку.");
     onProgress?.({ phase: "java", progress: 10, completed: 1, total: 1 });
-    return { major: JAVA_MAJOR, installed: true };
+    return { major, installed: true };
   } finally {
     await rm(archive, { force: true });
     await rm(staging, { recursive: true, force: true });
@@ -272,7 +274,7 @@ export async function ensureJavaRuntime(
 export type MinecraftRuntime = {
   instanceId: string;
   minecraftVersion: string;
-  fabricVersion: string;
+  profileVersion: string;
   installed: boolean;
 };
 export type MinecraftBuildStatus = "missing" | "update" | "ready";
@@ -564,6 +566,53 @@ async function installFabricFromOfficialProfile(
   return profile.id;
 }
 
+async function installNeoForgeFromOfficialInstaller(
+  location: string,
+  build: MinecraftBuild,
+  onProgress?: MinecraftInstallProgress,
+): Promise<string> {
+  if (build.minecraftVersion !== "1.21.1" || !/^21\.1\.\d+$/.test(build.loaderVersion))
+    throw new Error("Указана неподдерживаемая версия NeoForge.");
+  const version = build.loaderVersion;
+  const profileId = `neoforge-${version}`;
+  const profilePath = join(location, "versions", profileId, `${profileId}.json`);
+  const completeMarker = join(location, "versions", profileId, ".lapis-installed");
+  try {
+    await access(profilePath);
+    if ((await readFile(completeMarker, "utf8")) === version) return profileId;
+  } catch {
+    // A missing completion marker means the installer must run to completion.
+  }
+  const fileName = `neoforge-${version}-installer.jar`;
+  const installerPath = join(location, "libraries", "net", "neoforged", "neoforge", version, fileName);
+  const url = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${version}/${fileName}`;
+  const checksumResponse = await fetch(`${url}.sha1`);
+  if (!checksumResponse.ok) throw new Error("Не удалось получить SHA-1 установщика NeoForge.");
+  const checksum = (await checksumResponse.text()).trim().split(/\s+/)[0];
+  if (!checksum || !/^[a-f0-9]{40}$/i.test(checksum))
+    throw new Error("Некорректная контрольная сумма установщика NeoForge.");
+  onProgress?.({ phase: "neoforge", progress: 75, fileName });
+  await downloadVerified(url, installerPath, checksum);
+  const launcherProfilesPath = join(location, "launcher_profiles.json");
+  try {
+    await access(launcherProfilesPath);
+  } catch {
+    // NeoForge's official installer requires a launcher profile file even in an
+    // isolated Lapis instance. Never replace an existing one.
+    await writeFile(launcherProfilesPath, '{"profiles":{}}');
+  }
+  await execFileAsync(javaPath(21), ["-jar", installerPath, "--installClient", location], {
+    cwd: location,
+    windowsHide: true,
+    timeout: 15 * 60_000,
+    maxBuffer: 10 * MIB,
+  });
+  await access(profilePath);
+  await writeFile(completeMarker, version);
+  onProgress?.({ phase: "neoforge", progress: 82, fileName: profileId });
+  return profileId;
+}
+
 async function installBuildMods(
   location: string,
   mods: MinecraftBuild["mods"],
@@ -626,6 +675,12 @@ export async function getMinecraftBuildStatus(
         `${build.minecraftVersion}.json`,
       ),
     );
+    if (build.loader === "neoforge") {
+      const profileId = `neoforge-${build.loaderVersion}`;
+      await access(join(location, "versions", profileId, `${profileId}.json`));
+      if ((await readFile(join(location, "versions", profileId, ".lapis-installed"), "utf8")) !== build.loaderVersion)
+        return "update";
+    }
     for (const mod of build.mods) {
       if ((await sha1File(join(location, "mods", mod.fileName))) !== mod.sha1)
         return "update";
@@ -725,6 +780,9 @@ export async function ensureMinecraftRuntime(
     build.mods.map((mod) => mod.size),
   );
   await ensureFreeDiskSpace(location, requiredBytes);
+  if (build.loader === "neoforge" && build.minecraftVersion !== "1.21.1")
+    throw new Error("NeoForge пока поддерживается только для Minecraft 1.21.1.");
+  if (build.loader === "neoforge") await ensureJavaRuntime(onProgress, 21);
   const vanilla = await getOfficialMinecraftVersion(build.minecraftVersion);
   const dispatcher = new Agent({
     connections: 4,
@@ -771,11 +829,9 @@ export async function ensureMinecraftRuntime(
       );
     }
     try {
-      const fabricVersion = await installFabricFromOfficialProfile(
-        location,
-        build,
-        onProgress,
-      );
+      const profileVersion = build.loader === "fabric"
+        ? await installFabricFromOfficialProfile(location, build, onProgress)
+        : await installNeoForgeFromOfficialInstaller(location, build, onProgress);
       await installBuildMods(location, build.mods, onProgress);
       onProgress?.({
         phase: "complete",
@@ -786,12 +842,12 @@ export async function ensureMinecraftRuntime(
       return {
         instanceId: build.id,
         minecraftVersion: build.minecraftVersion,
-        fabricVersion,
+        profileVersion,
         installed: true,
       };
     } catch (error) {
       throw new Error(
-        "Не удалось установить зависимости Fabric. Повторите установку.",
+        `Не удалось установить зависимости ${build.loader}. Повторите установку.`,
         { cause: error },
       );
     }
@@ -816,15 +872,16 @@ export async function launchMinecraftRuntime(
     throw new Error(
       "Сборка не соответствует подготовленному игровому окружению.",
     );
-  const executable = javaPath();
-  if (!(await javaWorks(executable)))
+  const javaMajor = build.loader === "neoforge" ? 21 : 25;
+  const executable = javaPath(javaMajor);
+  if (!(await javaWorks(executable, javaMajor)))
     throw new Error("Java runtime не готова.");
   if (!Number.isSafeInteger(profile.memoryMb) || profile.memoryMb < 1024) {
     throw new Error("Выбран недопустимый объём памяти для Minecraft.");
   }
   await applyAudioCompatibilitySettingsAt(location);
   await applyGraphicsCompatibilitySettingsAt(location);
-  await prepareWindowsNativeLayout(location, runtime.fabricVersion);
+  await prepareWindowsNativeLayout(location, runtime.profileVersion);
   const environment = profile.bridgeBootstrap
     ? {
         ...process.env,
@@ -838,10 +895,10 @@ export async function launchMinecraftRuntime(
     userType: "legacy",
     launcherName: "Lapis Launcher",
     launcherBrand: "lapis",
-    version: runtime.fabricVersion,
+    version: runtime.profileVersion,
     gamePath: location,
     resourcePath: location,
-    nativeRoot: join(location, "versions", runtime.fabricVersion, "natives"),
+    nativeRoot: join(location, "versions", runtime.profileVersion, "natives"),
     javaPath: executable,
     minMemory: Math.min(1024, profile.memoryMb),
     maxMemory: profile.memoryMb,
@@ -853,12 +910,12 @@ export async function launchMinecraftRuntime(
 
 async function prepareWindowsNativeLayout(
   location: string,
-  fabricVersion: string,
+  profileVersion: string,
 ): Promise<void> {
   const nativesDirectory = join(
     location,
     "versions",
-    fabricVersion,
+    profileVersion,
     "natives",
     "java",
   );

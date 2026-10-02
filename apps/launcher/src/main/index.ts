@@ -733,6 +733,9 @@ async function requestInstallManifest(
 async function withLauncherManagedBridge(
   manifest: GameInstallManifest,
 ): Promise<GameInstallManifest> {
+  // The bundled Bridge is a Fabric mod. NeoForge servers currently use their
+  // own in-game authentication and must not receive an incompatible JAR.
+  if (manifest.loader === "neoforge") return manifest;
   const bridgePath = is.dev
     ? join(app.getAppPath(), "resources", "lapis-bridge-client.jar")
     : join(process.resourcesPath, "core-mods", "lapis-bridge-client.jar");
@@ -1859,8 +1862,9 @@ app.whenReady().then(async () => {
         throw new ApiError("Некорректный сервер.");
       const manifest = await requestInstallManifest(serverId);
       reportInstallProgress(serverId, { phase: "preparing", progress: 0 });
-      await ensureJavaRuntime((event) =>
-        reportInstallProgress(serverId, event),
+      await ensureJavaRuntime(
+        (event) => reportInstallProgress(serverId, event),
+        manifest.loader === "neoforge" ? 21 : 25,
       );
       return {
         ok: true,
@@ -1872,7 +1876,7 @@ app.whenReady().then(async () => {
       const message =
         error instanceof Error
           ? error.message
-          : "Не удалось установить Minecraft/Fabric. Повторите попытку.";
+          : "Не удалось установить Minecraft и загрузчик модов. Повторите попытку.";
       return { ok: false, error: { message } };
     }
   });
@@ -2021,8 +2025,9 @@ app.whenReady().then(async () => {
       const manifest = await requestInstallManifest(serverId);
       reportInstallProgress(serverId, { phase: "preparing", progress: 0 });
       launchStage = "java";
-      await ensureJavaRuntime((event) =>
-        reportInstallProgress(serverId, event),
+      await ensureJavaRuntime(
+        (event) => reportInstallProgress(serverId, event),
+        manifest.loader === "neoforge" ? 21 : 25,
       );
       launchStage = "build";
       const runtime = await ensureMinecraftRuntime(manifest, (event) =>

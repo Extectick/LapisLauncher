@@ -21,7 +21,7 @@ type ServerCatalogItem = {
     id: string;
     name: string;
     minecraftVersion: string;
-    loader: "fabric";
+    loader: "fabric" | "neoforge";
     loaderVersion: string;
     modCount: number;
   };
@@ -53,6 +53,7 @@ type InstallProgress = {
     | "libraries"
     | "assets"
     | "fabric"
+    | "neoforge"
     | "mods"
     | "complete";
   completed?: number;
@@ -206,7 +207,7 @@ contextBridge.exposeInMainWorld("lapis", {
       IpcResult<{
         instanceId: string;
         minecraftVersion: string;
-        fabricVersion: string;
+        profileVersion: string;
         installed: boolean;
       }>
     > => ipcRenderer.invoke("runtime:ensure-game", serverId),

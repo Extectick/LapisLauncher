@@ -41,6 +41,7 @@ import { PrismaService } from "../prisma.service";
 import { SkinService } from "../profile/skin.service";
 import { ManifestSigningService } from "./manifest-signing.service";
 import { inspectFabricMod } from "./fabric-mod-metadata";
+import { inspectNeoForgeMod } from "./neoforge-mod-metadata";
 
 const SERVER_ICON_ROUTE = "v1/servers";
 const MOD_CONTENT_ROUTE = "v1/content/mods";
@@ -114,7 +115,7 @@ export class ServersService {
     });
     return serverCatalogItemSchema.array().parse(
       servers.map(({ activeBuild, ...server }) => {
-        if (!activeBuild || activeBuild.loader !== "fabric")
+        if (!activeBuild || !["fabric", "neoforge"].includes(activeBuild.loader))
           throw new Error(`Server ${server.id} has no supported active build.`);
         return {
           ...server,
@@ -301,6 +302,7 @@ export class ServersService {
         activeBuild: {
           select: {
             minecraftVersion: true,
+            loader: true,
             loaderVersion: true,
             mods: {
               orderBy: [{ createdAt: "desc" }, { fileName: "asc" }],
@@ -329,6 +331,7 @@ export class ServersService {
               mod.sha1,
               path,
               server.activeBuild!.minecraftVersion,
+              server.activeBuild!.loader,
               server.activeBuild!.loaderVersion,
             ),
             size: await stat(path)
@@ -355,7 +358,7 @@ export class ServersService {
       select: {
         activeBuildId: true,
         activeBuild: {
-          select: { minecraftVersion: true, loaderVersion: true },
+          select: { minecraftVersion: true, loader: true, loaderVersion: true },
         },
       },
     });
@@ -404,6 +407,7 @@ export class ServersService {
         sha1,
         destinationPath,
         server.activeBuild.minecraftVersion,
+        server.activeBuild.loader,
         server.activeBuild.loaderVersion,
       );
       const mod = await this.prisma.$transaction(async (tx) => {
@@ -487,7 +491,7 @@ export class ServersService {
           enabled: true,
           createdAt: true,
           build: {
-            select: { minecraftVersion: true, loaderVersion: true },
+            select: { minecraftVersion: true, loader: true, loaderVersion: true },
           },
         },
       });
@@ -517,6 +521,7 @@ export class ServersService {
         updated.sha1,
         await resolveModPath(root, updated.sha1, updated.fileName),
         build.minecraftVersion,
+        build.loader,
         build.loaderVersion,
       ),
       size,
@@ -569,16 +574,15 @@ export class ServersService {
     sha1: string,
     path: string,
     minecraftVersion: string,
+    loader: string,
     loaderVersion: string,
   ): AdminClientMod["compatibility"] {
-    const key = `${sha1}:${minecraftVersion}:${loaderVersion}`;
+    const key = `${sha1}:${minecraftVersion}:${loader}:${loaderVersion}`;
     const cached = this.modCompatibilityCache.get(key);
     if (cached) return cached;
-    const compatibility = inspectFabricMod(
-      path,
-      minecraftVersion,
-      loaderVersion,
-    );
+    const compatibility = loader === "neoforge"
+      ? inspectNeoForgeMod(path)
+      : inspectFabricMod(path, minecraftVersion, loaderVersion);
     this.modCompatibilityCache.set(key, compatibility);
     if (this.modCompatibilityCache.size > 512) {
       const oldest = this.modCompatibilityCache.keys().next().value;
@@ -613,7 +617,7 @@ export class ServersService {
         },
       },
     });
-    if (!server?.activeBuild || server.activeBuild.loader !== "fabric")
+    if (!server?.activeBuild || !["fabric", "neoforge"].includes(server.activeBuild.loader))
       throw new Error("Сборка сервера недоступна.");
     const modsRoot = process.env.LAPIS_CONTENT_ROOT ?? DEFAULT_CONTENT_ROOT;
     const mods = await Promise.all(
@@ -697,7 +701,7 @@ export class ServersService {
         activeBuild: { select: { id: true, loader: true } },
       },
     });
-    if (!server?.activeBuild || server.activeBuild.loader !== "fabric")
+    if (!server?.activeBuild || !["fabric", "neoforge"].includes(server.activeBuild.loader))
       throw new Error("Сервер недоступен.");
     return gameLaunchContextSchema
       .omit({

@@ -78,7 +78,7 @@ export const serverCatalogItemSchema = z.object({
     id: z.string(),
     name: z.string(),
     minecraftVersion: z.string(),
-    loader: z.literal("fabric"),
+    loader: z.enum(["fabric", "neoforge"]),
     loaderVersion: z.string(),
     modCount: z.number().int().nonnegative(),
   }),
@@ -106,7 +106,7 @@ export const adminServerSchema = z.object({
     id: z.string().min(1).max(64),
     name: z.string().min(1).max(80),
     minecraftVersion: z.string().min(1).max(32),
-    loader: z.literal("fabric"),
+    loader: z.enum(["fabric", "neoforge"]),
     loaderVersion: z.string().min(1).max(32),
     modCount: z.number().int().nonnegative(),
   }),
@@ -234,7 +234,7 @@ export type SkinUploadInput = z.infer<typeof skinUploadSchema>;
 export const gameInstallManifestSchema = z.object({
   id: z.string(),
   minecraftVersion: z.string(),
-  loader: z.literal("fabric"),
+  loader: z.enum(["fabric", "neoforge"]),
   loaderVersion: z.string(),
   mods: z.array(
     z.object({
