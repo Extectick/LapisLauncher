@@ -2054,6 +2054,7 @@ app.whenReady().then(async () => {
         uuid: launchContext.minecraftUuid,
         memoryMb: settings.memoryMb,
         fullscreen: settings.fullscreen,
+        server: { host: launchContext.host, port: launchContext.port },
         bridgeBootstrap: bootstrap,
       });
       if (!process.pid) throw new Error("Minecraft process did not start.");
