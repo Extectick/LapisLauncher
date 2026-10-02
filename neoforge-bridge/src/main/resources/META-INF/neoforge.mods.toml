@@ -1,0 +1,23 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="lapisbridge"
+version="0.1.1"
+displayName="Lapis Bridge"
+description='''Lapis Launcher ticket authentication for NeoForge 1.21.1.'''
+
+[[dependencies.lapisbridge]]
+modId="neoforge"
+type="required"
+versionRange="[21.1.230,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.lapisbridge]]
+modId="minecraft"
+type="required"
+versionRange="[1.21.1]"
+ordering="NONE"
+side="BOTH"

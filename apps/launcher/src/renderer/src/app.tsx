@@ -2001,6 +2001,22 @@ function UserModsDialog({
                 {requiredMods.map((mod) => (
                   <li key={mod.fileName}>
                     {mod.fileName.replace(/\.jar$/i, "")}
+                    {mod.fileName.startsWith("xaerominimap-") && (
+                      <>
+                        {" · "}
+                        <a href="https://modrinth.com/mod/xaeros-minimap" target="_blank" rel="noopener noreferrer">
+                          страница автора
+                        </a>
+                      </>
+                    )}
+                    {mod.fileName.startsWith("xaeroworldmap-") && (
+                      <>
+                        {" · "}
+                        <a href="https://modrinth.com/mod/xaeros-world-map" target="_blank" rel="noopener noreferrer">
+                          страница автора
+                        </a>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>
