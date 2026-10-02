@@ -9,6 +9,7 @@ import type {
   ServerCatalogItem,
 } from "@lapis/contracts";
 import type { AppUpdateStatus } from "../../shared/update-types";
+import { formatBuildVersion, loaderDisplayName } from "./build-label";
 import { IdleAnimation, SkinViewer } from "skinview3d";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -1263,7 +1264,7 @@ function Dashboard({
                 <div className="server-info">
                   <h3>{server.name}</h3>
                   <p>
-                    Версия: Fabric {server.build.minecraftVersion} ·{" "}
+                    Версия: {formatBuildVersion(server.build)} ·{" "}
                     <button
                       className="server-inline-action"
                       type="button"
@@ -1680,7 +1681,7 @@ function AdminModsDialog({
                         : ""
                     }${
                       mod.compatibility.loaderRequirement
-                        ? ` Fabric Loader: ${mod.compatibility.loaderRequirement}.`
+                        ? ` ${loaderDisplayName(server.activeBuild.loader)} Loader: ${mod.compatibility.loaderRequirement}.`
                         : ""
                     }`}
                   >
@@ -2089,7 +2090,7 @@ function AdminScreen({
                     </span>
                   </span>
                   <span>
-                    Fabric {server.activeBuild.minecraftVersion} · {server.host}
+                    {formatBuildVersion(server.activeBuild)} · {server.host}
                     :{server.port}
                   </span>
                 </span>
